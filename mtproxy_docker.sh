@@ -104,7 +104,7 @@ docker rm -f mtproxy >/dev/null 2>&1 || true
 docker run -d \
     --name mtproxy \
     --restart always \
-    -p 10086:443 \
+    -p 15689:443 \
     -v /opt/mtproxy/config:/data \
     -e SECRET=${SECRET} \
     alexdoesh/mtproxy:latest
