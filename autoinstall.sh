@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-#   MTProxy 一键安装脚本（完整增强版）
+#   MTProxy 一键自动安装脚本 autoinstall.sh
 # ================================================
 
 set -e
@@ -79,7 +79,7 @@ WantedBy=multi-user.target
 EOF
 
 # ----------------------------------------
-# Watchdog 自动守护（第二层守护）
+# Watchdog 自动守护（第二层监控）
 # ----------------------------------------
 cat >/usr/local/bin/mtproxy_watchdog.sh <<EOF
 #!/bin/bash
@@ -111,7 +111,7 @@ systemctl enable --now MTProxy
 systemctl enable --now mtproxy-watchdog.service
 
 # ----------------------------------------
-# 管理工具（已修复 Secret 显示）
+# 生成管理工具（已修复 Secret 显示）
 # ----------------------------------------
 cat >/usr/local/bin/mtp <<EOF
 #!/bin/bash
@@ -119,11 +119,11 @@ cat >/usr/local/bin/mtp <<EOF
 CONF=/opt/mtprotoproxy/config.py
 IP=\$(wget -qO- ipv4.icanhazip.com)
 
-# 读取 PORT
-PORT=\$(grep -oP '^PORT\s*=\\s*\\K[0-9]+' "\$CONF")
+# 读取端口
+PORT=\$(grep -oP '^PORT\\s*=\\s*\\K[0-9]+' "\$CONF")
 
-# 读取 Secret（从 USERS 中提取第一个密钥）
-SECRET=\$(grep -oP 'USERS\s*=.*?"[^"]+"\s*:\s*"\\K[^"]+' "\$CONF")
+# 修复 Secret 提取
+SECRET=\$(grep -oP 'USERS\\s*=.*?"[^"]+"\\s*:\\s*"\\K[^"]+' "\$CONF")
 
 TG_LINK="https://t.me/proxy?server=\${IP}&port=\${PORT}&secret=dd\${SECRET}"
 
@@ -189,7 +189,7 @@ echo "公网 IP:     $IP"
 echo "端口:        $PORT"
 echo "Secret32:    $SECRET"
 echo ""
-echo "👉 Telegram 链接："
+echo "👉 Telegram 代理链接："
 echo "$TG_LINK"
 echo ""
 echo "👉 管理工具： mtp"
