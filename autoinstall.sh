@@ -36,7 +36,7 @@ show_status() {
     systemctl status MTProxy --no-pager
 
     echo -e "\n${GREEN}>>> 当前配置:${RESET}"
-    cat $CONF
+    cat "$CONF"
 }
 
 restart_service() {
@@ -46,14 +46,14 @@ restart_service() {
 
 change_port() {
     read -p "请输入新端口: " NEWPORT
-    sed -i "s/^PORT.*/PORT = $NEWPORT/" $CONF
+    sed -i "s/^PORT.*/PORT = $NEWPORT/" "$CONF"
     restart_service
     echo -e "${GREEN}端口已修改为 $NEWPORT${RESET}"
 }
 
 new_secret() {
     NEW=$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/user1\": \".*\"/user1\": \"$NEW\"/" $CONF
+    sed -i "s/user1\": \".*\"/user1\": \"$NEW\"/" "$CONF"
     restart_service
     echo -e "${GREEN}新 SECRET: $NEW${RESET}"
 }
@@ -61,20 +61,21 @@ new_secret() {
 add_secret() {
     read -p "输入新用户名: " NAME
     NEW=$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/}/,\"$NAME\": \"$NEW\"}/" $CONF
+    sed -i "s/}/,\"$NAME\": \"$NEW\"}/" "$CONF"
     restart_service
     echo -e "${GREEN}已添加用户 $NAME，SECRET=$NEW${RESET}"
 }
 
 show_links() {
-    PORT=$(grep PORT $CONF | grep -oE '[0-9]+')
-    SECRETS=$(grep -oP '"\w+": "\K[a-f0-9]+' $CONF)
+    PORT=$(grep PORT "$CONF" | grep -oE '[0-9]+')
+    SECRETS=$(grep -oP '"\w+": "\K[a-f0-9]+' "$CONF")
 
     echo -e "${YELLOW}>>> 连接信息:${RESET}"
     for S in $SECRETS; do
         echo -e "${GREEN}tg://proxy?server=$IP&port=$PORT&secret=dd$S${RESET}"
-        echo -e "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$S"
-        echo -e "server=$IP  port=$PORT  secret=dd$S\n"
+        echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$S"
+        echo "server=$IP  port=$PORT  secret=dd$S"
+        echo ""
     done
 }
 
@@ -86,12 +87,10 @@ uninstall_mtproxy() {
     echo -e "${RED}MTProxy 已卸载${RESET}"
 }
 
-# ==========================================
-# WATCHDOG 功能
-# ==========================================
+# ========== WATCHDOG 相关功能 ==========
 
 install_watchdog() {
-    cat > $WATCHDOG <<EOF
+    cat > "$WATCHDOG" <<EOF
 #!/bin/bash
 
 SERVICE="MTProxy.service"
@@ -106,7 +105,7 @@ if ! systemctl is-active --quiet \$SERVICE; then
     systemctl restart \$SERVICE
 fi
 
-# 检查 mtprotoproxy.py 进程
+# 检查进程
 if ! pgrep -f "mtprotoproxy.py" > /dev/null; then
     echo "\$(timestamp) 进程丢失，正在恢复..." >> \$LOG
     systemctl restart \$SERVICE
@@ -119,9 +118,8 @@ if ! ss -tuln | grep -q "\$PORT"; then
 fi
 EOF
 
-    chmod +x $WATCHDOG
+    chmod +x "$WATCHDOG"
 
-    # 加入 crontab
     (crontab -l 2>/dev/null | grep -v "$WATCHDOG"; echo "* * * * * $WATCHDOG >/dev/null 2>&1") | crontab -
 
     echo -e "${GREEN}Watchdog 已安装并加入 crontab 守护！${RESET}"
@@ -129,31 +127,31 @@ EOF
 
 uninstall_watchdog() {
     crontab -l | grep -v "$WATCHDOG" | crontab - || true
-    rm -f $WATCHDOG
+    rm -f "$WATCHDOG"
     echo -e "${YELLOW}Watchdog 已卸载${RESET}"
 }
 
 show_watchdog_log() {
-    if [ ! -f $LOG ]; then
-        echo -e "${YELLOW}日志文件不存在：$LOG${RESET}"
+    echo -e "${GREEN}>>> Watchdog 日志:${RESET}"
+    if [ -f "$LOG" ]; then
+        tail -n 50 "$LOG"
     else
-        echo -e "${GREEN}>>> Watchdog 日志:${RESET}"
-        tail -n 50 $LOG
+        echo -e "${YELLOW}日志不存在${RESET}"
     fi
 }
 
 run_watchdog_once() {
     echo -e "${GREEN}执行 watchdog 检查...${RESET}"
-    bash $WATCHDOG
+    bash "$WATCHDOG"
     echo -e "${GREEN}完成${RESET}"
 }
 
-# ==========================================
+# ========== 主菜单循环 ==========
 
 while true; do
     menu
     read -p "选择功能: " CH
-    case $CH in
+    case "$CH" in
         1) show_status ;;
         2) restart_service ;;
         3) change_port ;;
@@ -166,6 +164,6 @@ while true; do
         10) install_watchdog ;;
         11) uninstall_watchdog ;;
         0) exit ;;
-        *) echo "无效输入" ;;
+        *) echo -e "${RED}无效输入${RESET}" ;;
     esac
 done
