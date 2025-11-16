@@ -1,8 +1,15 @@
 #!/bin/bash
 # ================================================================
-# MTProxy Docker 一键安装脚本（最终修复 + 自动跳过版本）
-# 端口固定为 10086，不会出现 invalid proto
-# 适配 alexdoesh/mtproxy 镜像
+# MTProxy Docker 安装脚本（正式版）
+# 端口固定：15689
+# 功能：
+#  - 自动跳过重复安装
+#  - 完整依赖检测（Docker / xxd）
+#  - 永不出现 invalid proto
+#  - 自动生成 Secret
+#  - 自动 docker run
+#  - 启动成功检测
+#  - 完整代理链接输出
 # ================================================================
 
 set -e
@@ -14,49 +21,59 @@ err()  { echo -e "${RED}[ERR]${RESET} $1"; }
 
 echo -e "\n========== MTProxy 环境检查 ==========\n"
 
+
+# ---------------------------------------------------------
+# 固定端口（如需修改，仅需改这里）
+# ---------------------------------------------------------
+PORT=15689
+ok "使用固定端口：$PORT"
+
+
 # ---------------------------------------------------------
 # 检查 Docker 是否安装
 # ---------------------------------------------------------
+DOCKER_INSTALLED=true
 if ! command -v docker >/dev/null 2>&1; then
-    warn "Docker 未安装，稍后会自动安装。"
+    DOCKER_INSTALLED=false
+    warn "Docker 未安装，稍后将自动安装。"
 else
     ok "Docker 已安装"
 fi
 
-# ---------------------------------------------------------
-# 检查 MTProxy 是否已运行（完全跳过安装）
-# ---------------------------------------------------------
-if docker ps --format '{{.Names}}' | grep -q "^mtproxy$"; then
-    ok "MTProxy 正在运行"
-    warn "检测到 MTProxy 已安装并正在运行 —— 自动跳过安装流程。"
-    exit 0
-fi
 
 # ---------------------------------------------------------
-# 检查 MTProxy 容器是否存在（已安装但未运行）
+# 如果 Docker 已安装，才能检查容器是否存在
 # ---------------------------------------------------------
-if docker ps -a --format '{{.Names}}' | grep -q "^mtproxy$"; then
-    ok "MTProxy 容器已存在"
-    warn "检测到 MTProxy 已安装（容器存在） —— 自动跳过安装流程。"
-    exit 0
+if [ "$DOCKER_INSTALLED" = true ]; then
+
+    # MTProxy 正在运行？
+    if docker ps --format '{{.Names}}' | grep -q "^mtproxy$"; then
+        ok "MTProxy 正在运行"
+        warn "检测到 MTProxy 已安装 —— 自动跳过安装。"
+        exit 0
+    fi
+
+    # MTProxy 容器存在但未运行？
+    if docker ps -a --format '{{.Names}}' | grep -q "^mtproxy$"; then
+        ok "MTProxy 容器已存在（未运行）"
+        warn "检测到 MTProxy 已安装 —— 自动跳过安装。"
+        exit 0
+    fi
 fi
 
+
 # ---------------------------------------------------------
-# 检查配置目录（避免重复安装）
+# 检查配置目录是否存在
 # ---------------------------------------------------------
 if [ -d "/opt/mtproxy/config" ]; then
-    ok "/opt/mtproxy/config 目录已存在"
-    warn "检测到上次安装残留 —— 自动跳过安装流程。"
+    ok "检测到配置目录存在（旧安装残留）"
+    warn "自动跳过安装。"
     exit 0
 fi
+
 
 echo -e "\n========== 开始安装 MTProxy ==========\n"
 
-# ---------------------------------------------------------
-# 固定端口（不使用 read，避免空值导致 invalid proto）
-# ---------------------------------------------------------
-PORT=15689
-ok "端口固定为：${PORT}"
 
 # ---------------------------------------------------------
 # 安装 xxd
@@ -64,15 +81,17 @@ ok "端口固定为：${PORT}"
 if ! command -v xxd >/dev/null 2>&1; then
     warn "xxd 未安装，正在安装..."
     apt update -y
-    apt install -y xxd
+    apt install -y xxd vim-common
+    ok "xxd 安装完成"
 else
     ok "xxd 已安装"
 fi
 
+
 # ---------------------------------------------------------
-# 安装 Docker（如果尚未安装）
+# 安装 Docker
 # ---------------------------------------------------------
-if ! command -v docker >/dev/null 2>&1; then
+if [ "$DOCKER_INSTALLED" = false ]; then
     warn "Docker 未安装，正在安装..."
     curl -fsSL https://get.docker.com | bash
     systemctl enable docker
@@ -80,15 +99,17 @@ if ! command -v docker >/dev/null 2>&1; then
     ok "Docker 安装完成"
 fi
 
+
 # ---------------------------------------------------------
 # 生成 Secret
 # ---------------------------------------------------------
 mkdir -p /opt/mtproxy/config
-
 SECRET=$(xxd -ps -l 16 /dev/urandom)
 echo -n "$SECRET" > /opt/mtproxy/config/secret
+chmod 600 /opt/mtproxy/config/secret
 
 ok "生成 Secret：$SECRET"
+
 
 # ---------------------------------------------------------
 # 获取公网 IP
@@ -96,25 +117,37 @@ ok "生成 Secret：$SECRET"
 IP=$(wget -qO- ipv4.icanhazip.com || echo "0.0.0.0")
 ok "公网 IP：$IP"
 
+
 # ---------------------------------------------------------
-# 启动 MTProxy 容器
+# 启动 MTProxy Docker 容器
 # ---------------------------------------------------------
 docker rm -f mtproxy >/dev/null 2>&1 || true
 
 docker run -d \
     --name mtproxy \
     --restart always \
-    -p 15689:443 \
+    -p ${PORT}:443 \
     -v /opt/mtproxy/config:/data \
     -e SECRET=${SECRET} \
     alexdoesh/mtproxy:latest
 
-ok "MTProxy Docker 容器已启动"
-
 sleep 2
 
+
 # ---------------------------------------------------------
-# 输出链接
+# 检查容器是否成功启动
+# ---------------------------------------------------------
+if ! docker ps --format '{{.Names}}' | grep -q "^mtproxy$"; then
+    err "MTProxy 启动失败！请运行以下命令查看日志："
+    echo "docker logs mtproxy"
+    exit 1
+fi
+
+ok "MTProxy 已成功启动！"
+
+
+# ---------------------------------------------------------
+# 输出代理链接
 # ---------------------------------------------------------
 TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
 TM_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
@@ -127,4 +160,5 @@ echo -e "tg:// 链接：\n${GREEN}${TG_LINK}${RESET}\n"
 echo -e "t.me 链接：\n${GREEN}${TM_LINK}${RESET}"
 echo -e "=============================================================\n"
 
-ok "MTProxy 安装并启动成功！"
+ok "MTProxy 安装成功！"
+ok "MTProxy 已在 Docker 后台稳定运行。"
