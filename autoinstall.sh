@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-#   MTProxy 一键自动安装脚本  autoinstall.sh
+#   MTProxy 一键安装脚本（带自动依赖检查）
 # ================================================
 
 set -e
@@ -23,6 +23,30 @@ if [ -f "$CHECK_FILE" ]; then
 fi
 
 # ----------------------------------------
+# 自动检查并安装依赖
+# ----------------------------------------
+REQUIRED_CMDS=("git" "wget" "python3" "pip3" "xxd")
+
+echo "🔍 正在检查系统依赖..."
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "❌ 未检测到依赖：$cmd"
+        echo "➡️ 正在自动安装：$cmd"
+        apt update -y
+        apt install -y git wget python3 python3-pip xxd >/dev/null 2>&1 || {
+            echo "❌ 安装 $cmd 失败，请手动检查网络环境。"
+            exit 1
+        }
+    else
+        echo "✔ 依赖已存在：$cmd"
+    fi
+done
+
+echo "✅ 所有依赖检查完成"
+echo ""
+
+# ----------------------------------------
 # 输入端口
 # ----------------------------------------
 read -p "请输入 MTProxy 端口（默认 10086）： " PORT
@@ -41,12 +65,6 @@ echo "密钥: $SECRET"
 echo "----------------------------------------------"
 
 # ----------------------------------------
-# 安装依赖
-# ----------------------------------------
-apt update -y
-apt install -y git wget python3 python3-pip xxd
-
-# ----------------------------------------
 # 下载 MTProxy
 # ----------------------------------------
 rm -rf "$INSTALL_ROOT"
@@ -61,7 +79,7 @@ USERS = {"tg": "${SECRET}"}
 EOF
 
 # ----------------------------------------
-# 生成 systemd 服务
+# 创建 systemd 服务
 # ----------------------------------------
 cat >/etc/systemd/system/MTProxy.service <<EOF
 [Unit]
@@ -79,7 +97,7 @@ WantedBy=multi-user.target
 EOF
 
 # ----------------------------------------
-# Watchdog 自动守护
+# Watchdog 自动守护（第二层守护）
 # ----------------------------------------
 cat >/usr/local/bin/mtproxy_watchdog.sh <<EOF
 #!/bin/bash
@@ -111,15 +129,17 @@ systemctl enable --now MTProxy
 systemctl enable --now mtproxy-watchdog.service
 
 # ----------------------------------------
-# 生成管理工具
+# 管理工具（已修复 Secret 显示）
 # ----------------------------------------
 cat >/usr/local/bin/mtp <<EOF
 #!/bin/bash
 
 CONF=/opt/mtprotoproxy/config.py
 IP=\$(wget -qO- ipv4.icanhazip.com)
-PORT=\$(grep -oP "(?<=PORT = ).*" \$CONF)
-SECRET=\$(grep -oP '(?<=tg":\\s*")[0-9a-f]+' \$CONF)
+
+PORT=\$(grep -oP '^PORT\\s*=\\s*\\K[0-9]+' "\$CONF")
+SECRET=\$(grep -oP 'USERS\\s*=.*?"[^"]+"\\s*:\\s*"\\K[^"]+' "\$CONF")
+
 TG_LINK="https://t.me/proxy?server=\${IP}&port=\${PORT}&secret=dd\${SECRET}"
 
 menu() {
@@ -158,6 +178,7 @@ while true; do
     0) exit 0;;
     *) echo "无效选项";;
     esac
+
     echo ""
     read -p "按回车继续..."
 done
@@ -183,7 +204,7 @@ echo "公网 IP:     $IP"
 echo "端口:        $PORT"
 echo "Secret32:    $SECRET"
 echo ""
-echo "👉 Telegram 代理链接："
+echo "👉 Telegram 链接："
 echo "$TG_LINK"
 echo ""
 echo "👉 管理工具： mtp"
