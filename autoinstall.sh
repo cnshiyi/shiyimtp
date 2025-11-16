@@ -23,10 +23,10 @@ if [ -f "$CHECK_FILE" ]; then
 fi
 
 # ----------------------------------------
-# 输入端口
+# 固定端口
 # ----------------------------------------
-read -p "请输入 MTProxy 端口（默认 10086）： " PORT
-PORT=${PORT:-10086}
+PORT=10086
+echo "使用固定端口：$PORT"
 
 # ----------------------------------------
 # 自动生成 32 位 HEX Secret
@@ -50,7 +50,7 @@ apt install -y git wget python3 python3-pip xxd
 # 下载 MTProxy
 # ----------------------------------------
 rm -rf "$INSTALL_ROOT"
-git clone -b master "$GIT_REPO" "$INSTALL_ROOT"
+git clone -b stable "$GIT_REPO" "$INSTALL_ROOT"
 
 # ----------------------------------------
 # 写入 config.py
@@ -83,10 +83,11 @@ EOF
 # ----------------------------------------
 cat >/usr/local/bin/mtproxy_watchdog.sh <<EOF
 #!/bin/bash
-if ! systemctl is-active --quiet MTProxy; then
+if ! pgrep -f mtprotoproxy.py > /dev/null; then
     systemctl restart MTProxy
 fi
 EOF
+
 chmod +x /usr/local/bin/mtproxy_watchdog.sh
 
 cat >/etc/systemd/system/mtproxy-watchdog.service <<EOF
@@ -119,7 +120,7 @@ cat >/usr/local/bin/mtp <<EOF
 CONF=/opt/mtprotoproxy/config.py
 IP=\$(wget -qO- ipv4.icanhazip.com)
 PORT=\$(grep -oP "(?<=PORT = ).*" \$CONF)
-SECRET=\$(grep -oP '(?<=tg":\\s*")[0-9a-f]+' \$CONF)
+SECRET=\$(grep -oP '(?<=\{"tg": ")[0-9a-f]+' \$CONF)
 TG_LINK="https://t.me/proxy?server=\${IP}&port=\${PORT}&secret=dd\${SECRET}"
 
 menu() {
