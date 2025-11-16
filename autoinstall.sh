@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-#   MTProxy 一键自动安装脚本 autoinstall.sh
+#   MTProxy 一键自动安装脚本  autoinstall.sh
 # ================================================
 
 set -e
@@ -61,7 +61,7 @@ USERS = {"tg": "${SECRET}"}
 EOF
 
 # ----------------------------------------
-# 创建 systemd 服务
+# 生成 systemd 服务
 # ----------------------------------------
 cat >/etc/systemd/system/MTProxy.service <<EOF
 [Unit]
@@ -79,7 +79,7 @@ WantedBy=multi-user.target
 EOF
 
 # ----------------------------------------
-# Watchdog 自动守护（第二层监控）
+# Watchdog 自动守护
 # ----------------------------------------
 cat >/usr/local/bin/mtproxy_watchdog.sh <<EOF
 #!/bin/bash
@@ -111,20 +111,15 @@ systemctl enable --now MTProxy
 systemctl enable --now mtproxy-watchdog.service
 
 # ----------------------------------------
-# 生成管理工具（已修复 Secret 显示）
+# 生成管理工具
 # ----------------------------------------
 cat >/usr/local/bin/mtp <<EOF
 #!/bin/bash
 
 CONF=/opt/mtprotoproxy/config.py
 IP=\$(wget -qO- ipv4.icanhazip.com)
-
-# 读取端口
-PORT=\$(grep -oP '^PORT\\s*=\\s*\\K[0-9]+' "\$CONF")
-
-# 修复 Secret 提取
-SECRET=\$(grep -oP 'USERS\\s*=.*?"[^"]+"\\s*:\\s*"\\K[^"]+' "\$CONF")
-
+PORT=\$(grep -oP "(?<=PORT = ).*" \$CONF)
+SECRET=\$(grep -oP '(?<=tg":\\s*")[0-9a-f]+' \$CONF)
 TG_LINK="https://t.me/proxy?server=\${IP}&port=\${PORT}&secret=dd\${SECRET}"
 
 menu() {
@@ -163,7 +158,6 @@ while true; do
     0) exit 0;;
     *) echo "无效选项";;
     esac
-
     echo ""
     read -p "按回车继续..."
 done
