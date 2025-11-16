@@ -1,169 +1,281 @@
-#!/bin/bash
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-INSTALL_ROOT="/opt/mtprotoproxy"
-CONF="$INSTALL_ROOT/config.py"
-IP=$(wget -qO- ipv4.icanhazip.com)
-SERVICE="MTProxy.service"
-LOG="/var/log/mtproxy_watchdog.log"
-WATCHDOG="/usr/local/bin/watchdog_mtp.sh"
+import asyncio
+import pymysql
+import boto3
+import asyncssh
+import redis
+from datetime import datetime
 
-GREEN="\e[32m"
-YELLOW="\e[33m"
-RED="\e[31m"
-RESET="\e[0m"
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F
+from aiogram.client.default import DefaultBotProperties
 
-menu() {
-    echo -e "${GREEN}
-================ MTProxy 管理菜单 ================
-1) 查看状态
-2) 重启服务
-3) 修改端口
-4) 生成新的 SECRET
-5) 添加额外 SECRET
-6) 输出代理连接
-7) 卸载 MTProxy
------------------------------------------------
-8) 查看 watchdog 日志
-9) 手动执行 watchdog 自愈
-10) 安装 watchdog（自动守护）
-11) 卸载 watchdog
-0) 退出
-=================================================${RESET}"
+from config import (
+    BOT_TOKEN,
+    DB_CONFIG,
+    SNAP_TABLES,
+    ACCOUNT_MAP,
+    AWS_ACCOUNTS,
+    SSH_KEYS,
+    WHITE_LIST,
+    REDIS_CONFIG
+)
+
+# Redis
+rds = redis.Redis(
+    host=REDIS_CONFIG["host"],
+    port=REDIS_CONFIG["port"],
+    password=REDIS_CONFIG["password"],
+    db=REDIS_CONFIG["db"],
+    decode_responses=True
+)
+
+REGION_CODE_MAP = {
+    "新加坡": "ap-southeast-1",
+    "东京": "ap-northeast-1",
+    "首尔": "ap-northeast-2",
+    "孟买": "ap-south-1",
+    "悉尼": "ap-southeast-2",
+    "法兰克福": "eu-central-1",
+    "巴黎": "eu-west-3",
+    "伦敦": "eu-west-2",
+    "爱尔兰": "eu-west-1",
+    "蒙特利尔": "ca-central-1",
+    "俄勒冈州": "us-west-2",
+    "俄亥俄州": "us-east-2",
+    "弗吉尼亚州": "us-east-1",
+    "斯德哥尔摩": "eu-north-1",
 }
 
-show_status() {
-    echo -e "${GREEN}>>> 服务状态:${RESET}"
-    systemctl status MTProxy --no-pager
 
-    echo -e "\n${GREEN}>>> 当前配置:${RESET}"
-    cat "$CONF"
-}
+def is_allowed(uid: int):
+    return uid in WHITE_LIST
 
-restart_service() {
-    systemctl restart MTProxy
-    echo -e "${GREEN}已重启 MTProxy${RESET}"
-}
 
-change_port() {
-    read -p "请输入新端口: " NEWPORT
-    sed -i "s/^PORT.*/PORT = $NEWPORT/" "$CONF"
-    restart_service
-    echo -e "${GREEN}端口已修改为 $NEWPORT${RESET}"
-}
+def log_success(msg): print(f"[SUCCESS {datetime.now()}] {msg}")
 
-new_secret() {
-    NEW=$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/user1\": \".*\"/user1\": \"$NEW\"/" "$CONF"
-    restart_service
-    echo -e "${GREEN}新 SECRET: $NEW${RESET}"
-}
 
-add_secret() {
-    read -p "输入新用户名: " NAME
-    NEW=$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/}/,\"$NAME\": \"$NEW\"}/" "$CONF"
-    restart_service
-    echo -e "${GREEN}已添加用户 $NAME，SECRET=$NEW${RESET}"
-}
+# ------------------------- 查询系统（AWS API） -------------------------
+def get_system_from_aws(instance_name, region, account_id):
+    try:
+        region_code = REGION_CODE_MAP.get(region, region)
+        acc = AWS_ACCOUNTS[account_id]
 
-show_links() {
-    PORT=$(grep PORT "$CONF" | grep -oE '[0-9]+')
-    SECRETS=$(grep -oP '"\w+": "\K[a-f0-9]+' "$CONF")
+        client = boto3.client(
+            "lightsail",
+            aws_access_key_id=acc["access_key"],
+            aws_secret_access_key=acc["secret_key"],
+            region_name=region_code,
+        )
 
-    echo -e "${YELLOW}>>> 连接信息:${RESET}"
-    for S in $SECRETS; do
-        echo -e "${GREEN}tg://proxy?server=$IP&port=$PORT&secret=dd$S${RESET}"
-        echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$S"
-        echo "server=$IP  port=$PORT  secret=dd$S"
-        echo ""
-    done
-}
+        resp = client.get_instance(instanceName=instance_name)
+        blueprint = resp["instance"]["blueprintId"].lower()
 
-uninstall_mtproxy() {
-    systemctl stop MTProxy
-    systemctl disable MTProxy
-    rm -f /etc/systemd/system/MTProxy.service
-    rm -rf /opt/mtprotoproxy
-    echo -e "${RED}MTProxy 已卸载${RESET}"
-}
+        if "ubuntu" in blueprint:
+            return "Ubuntu Linux"
+        if "debian" in blueprint:
+            return "Debian Linux"
+        if "centos" in blueprint:
+            return "CentOS Linux"
+        if "rocky" in blueprint:
+            return "Rocky Linux"
+        if "alma" in blueprint:
+            return "AlmaLinux"
+        if "amazon" in blueprint:
+            return "Amazon Linux"
+        if "windows" in blueprint:
+            return "Windows Server"
 
-# ========== WATCHDOG 相关功能 ==========
+        return f"未知系统 ({blueprint})"
 
-install_watchdog() {
-    cat > "$WATCHDOG" <<EOF
-#!/bin/bash
+    except Exception as e:
+        return f"❌ 查询系统信息失败：{e}"
 
-SERVICE="MTProxy.service"
-PORT=\$(grep PORT /opt/mtprotoproxy/config.py | grep -oE '[0-9]+')
-LOG="/var/log/mtproxy_watchdog.log"
 
-timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+# ------------------------- AWS 开放端口（替代 SSH） -------------------------
+def aws_open_port(instance_name, region, account_id, port):
+    try:
+        region_code = REGION_CODE_MAP.get(region, region)
+        acc = AWS_ACCOUNTS[account_id]
 
-# 检查 systemd 服务
-if ! systemctl is-active --quiet \$SERVICE; then
-    echo "\$(timestamp) systemd 服务未运行，正在重启..." >> \$LOG
-    systemctl restart \$SERVICE
-fi
+        client = boto3.client(
+            "lightsail",
+            aws_access_key_id=acc["access_key"],
+            aws_secret_access_key=acc["secret_key"],
+            region_name=region_code
+        )
 
-# 检查进程
-if ! pgrep -f "mtprotoproxy.py" > /dev/null; then
-    echo "\$(timestamp) 进程丢失，正在恢复..." >> \$LOG
-    systemctl restart \$SERVICE
-fi
+        client.open_instance_public_ports(
+            instanceName=instance_name,
+            portInfo={
+                "fromPort": int(port),
+                "toPort": int(port),
+                "protocol": "tcp"
+            }
+        )
 
-# 检查端口
-if ! ss -tuln | grep -q "\$PORT"; then
-    echo "\$(timestamp) 端口 \$PORT 未监听，正在修复..." >> \$LOG
-    systemctl restart \$SERVICE
-fi
-EOF
+        return f"🟢 端口 {port} 已通过 AWS API 成功放行（无需 SSH）"
 
-    chmod +x "$WATCHDOG"
+    except Exception as e:
+        return f"❌ AWS API 放行端口失败：{e}"
 
-    (crontab -l 2>/dev/null | grep -v "$WATCHDOG"; echo "* * * * * $WATCHDOG >/dev/null 2>&1") | crontab -
 
-    echo -e "${GREEN}Watchdog 已安装并加入 crontab 守护！${RESET}"
-}
+# ------------------------- SSH 检查端口是否监听（保留） -------------------------
+async def ssh_check_port(ip, account_id, region, port):
+    region_code = REGION_CODE_MAP.get(region, region)
+    priv_key = SSH_KEYS.get(account_id, {}).get(region_code)
+    if not priv_key:
+        return "❌ 无 SSH 私钥"
 
-uninstall_watchdog() {
-    crontab -l | grep -v "$WATCHDOG" | crontab - || true
-    rm -f "$WATCHDOG"
-    echo -e "${YELLOW}Watchdog 已卸载${RESET}"
-}
+    cmd = f"""
+sudo -i;
+sudo ss -tulnp | grep :{port} -w 2>/dev/null;
+"""
 
-show_watchdog_log() {
-    echo -e "${GREEN}>>> Watchdog 日志:${RESET}"
-    if [ -f "$LOG" ]; then
-        tail -n 50 "$LOG"
-    else
-        echo -e "${YELLOW}日志不存在${RESET}"
-    fi
-}
+    for user in ["root", "ubuntu", "admin"]:
+        try:
+            async with asyncssh.connect(ip, username=user, client_keys=[priv_key], known_hosts=None) as conn:
+                result = await conn.run(cmd, check=False)
+                return result.stdout or "未监听"
+        except:
+            continue
 
-run_watchdog_once() {
-    echo -e "${GREEN}执行 watchdog 检查...${RESET}"
-    bash "$WATCHDOG"
-    echo -e "${GREEN}完成${RESET}"
-}
+    return "❌ SSH 登录失败，无法检查端口"
 
-# ========== 主菜单循环 ==========
 
-while true; do
-    menu
-    read -p "选择功能: " CH
-    case "$CH" in
-        1) show_status ;;
-        2) restart_service ;;
-        3) change_port ;;
-        4) new_secret ;;
-        5) add_secret ;;
-        6) show_links ;;
-        7) uninstall_mtproxy ;;
-        8) show_watchdog_log ;;
-        9) run_watchdog_once ;;
-        10) install_watchdog ;;
-        11) uninstall_watchdog ;;
-        0) exit ;;
-        *) echo -e "${RED}无效输入${RESET}" ;;
-    esac
-done
+# ------------------------- 数据库查询 -------------------------
+def search_instance(keyword):
+    conn = pymysql.connect(**DB_CONFIG)
+    results = {"snapshot": []}
+
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute("SELECT * FROM data WHERE ip=%s OR instance_name=%s", (keyword, keyword))
+        results["data"] = cur.fetchall()
+
+    conn.close()
+    return results
+
+
+# ------------------------- 回复格式 -------------------------
+def format_response(keyword, d):
+    sys_info = get_system_from_aws(d["instance_name"], d["region"], d["account_id"])
+
+    return (
+        f"<b>🔍 查询：</b><code>{keyword}</code>\n\n"
+        f"<b>实例名：</b><code>{d['instance_name']}</code>\n"
+        f"<b>IP：</b><code>{d['ip']}</code>\n"
+        f"<b>区域：</b><code>{d['region']}</code>\n"
+        f"<b>系统：</b><code>{sys_info}</code>\n"
+        f"<b>到期：</b><code>{d['expiration_date']}</code>\n"
+        f"<b>账号：</b><code>{ACCOUNT_MAP.get(d['account_id'], d['account_id'])}</code>\n"
+    )
+
+
+# ------------------------- Aiogram -------------------------
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher()
+
+
+# ========================= 文本消息入口 =========================
+@dp.message(F.text)
+async def handle_msg(message: Message):
+
+    if not is_allowed(message.from_user.id):
+        return await message.answer("❌ 无权限")
+
+    uid = message.from_user.id
+    text = message.text.strip()
+
+    # ───── 用户输入端口（等待中）─────
+    if rds.get(f"wait_port:{uid}"):
+        instance_name, ip, acc, region = rds.get(f"wait_port:{uid}").split("|")
+        rds.delete(f"wait_port:{uid}")
+
+        port = int(text)
+
+        # AWS API 开放端口
+        result_api = aws_open_port(instance_name, region, acc, port)
+
+        # SSH 查询端口是否监听（可选）
+        result_ssh = await ssh_check_port(ip, acc, region, port)
+
+        return await message.answer(
+            f"🟢 AWS 放行结果：\n<code>{result_api}</code>\n\n"
+            f"📡 端口监听情况（SSH）：\n<code>{result_ssh}</code>"
+        )
+
+    # ───── 正常查询实例信息 ─────
+    result = search_instance(text)
+    if not result["data"]:
+        return await message.answer("❌ 未找到记录")
+
+    d = result["data"][0]
+
+    # 直接在格式化结果中返回系统信息（无按钮）
+    msg = format_response(text, d)
+
+    # 按钮
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔧 放行端口（AWS API）",
+                    callback_data=f"askPort:{d['instance_name']}:{d['ip']}:{d['account_id']}:{d['region']}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💻 SSH 执行 MTProxy",
+                    callback_data=f"ssh:{d['ip']}:{d['account_id']}:{d['region']}"
+                )
+            ],
+        ]
+    )
+
+    return await message.answer(msg, reply_markup=kb)
+
+
+# ========================= 点击按钮：准备输入端口 =========================
+@dp.callback_query(F.data.startswith("askPort:"))
+async def cb_ask_port(cb):
+    _, name, ip, acc, region = cb.data.split(":")
+    uid = cb.from_user.id
+
+    # 记录状态
+    rds.set(f"wait_port:{uid}", f"{name}|{ip}|{acc}|{region}")
+
+    await cb.message.answer("🔢 请输入要放行的端口号，例如：443")
+
+
+# ========================= SSH 执行 MTProxy =========================
+@dp.callback_query(F.data.startswith("ssh:"))
+async def cb_ssh(cb):
+    _, ip, acc, region = cb.data.split(":")
+
+    await cb.message.answer("💻 正在执行 MTProxy 启动脚本...")
+
+    region_code = REGION_CODE_MAP.get(region, region)
+    priv_key = SSH_KEYS.get(acc, {}).get(region_code)
+
+    for user in ["root", "ubuntu", "admin"]:
+        try:
+            async with asyncssh.connect(ip, username=user, client_keys=[priv_key], known_hosts=None) as conn:
+                result = await conn.run("sudo -i; cd /home/mtproxy; bash mtproxy.sh start", check=False)
+                return await cb.message.answer(f"<code>{result.stdout}</code>")
+        except:
+            continue
+
+    await cb.message.answer("❌ SSH 登录失败")
+
+
+# ========================= 主程序 =========================
+async def main():
+    log_success("🤖 AWS 搜索 + 系统识别 + AWS 放行端口 + SSH + 自定义端口机器人已启动")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
