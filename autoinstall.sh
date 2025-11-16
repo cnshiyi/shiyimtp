@@ -1,270 +1,165 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
-# ======================================================
-# 彩色输出
-# ======================================================
-GREEN="\e[32m"; YELLOW="\e[33m"; RED="\e[31m"; RESET="\e[0m"
-ok(){ echo -e "${GREEN}[OK] $1${RESET}"; }
-err(){ echo -e "${RED}[ERROR] $1${RESET}"; }
+GREEN="\e[32m"
+YELLOW="\e[33m"
+RED="\e[31m"
+RESET="\e[0m"
 
-# ======================================================
-# 基准路径（以当前目录为根目录）
-# ======================================================
-ABS=$(readlink -f "$0")
-BASE_DIR=$(dirname "$ABS")
-INSTALL_ROOT="$BASE_DIR/mtprotoproxy"
+INSTALL_ROOT="/opt/mtprotoproxy"
+WATCHDOG="/usr/local/bin/watchdog_mtp.sh"
+MTP_CLI="/usr/local/bin/mtp"
 
-# ======================================================
-# 安装依赖
-# ======================================================
-ok "安装依赖中..."
 apt update -y
-apt install -y git wget xxd python3 python3-pip htop >/dev/null 2>&1
+apt install -y git wget curl xxd python3 python3-pip systemctl || true
 
-# ======================================================
-# 输入端口
-# ======================================================
-read -p "请输入 MTProxy 端口（默认 10086）: " PORT
-PORT=${PORT:-10086}
-ok "端口：$PORT"
-
-# ======================================================
-# 生成 32 / 64 bit secret
-# ======================================================
-SECRET32=$(head -c 16 /dev/urandom | xxd -ps)
-SECRET64=$(head -c 32 /dev/urandom | xxd -ps)
-
-ok "生成 32 位 Secret：$SECRET32"
-ok "生成 64 位 Secret：$SECRET64"
-
-# ======================================================
+# --------------------------
 # 获取公网 IP
-# ======================================================
-IP=$(wget -qO- ipv4.icanhazip.com)
-ok "公网 IP：$IP"
+# --------------------------
+IP=$(wget -qO- ipv4.icanhazip.com || curl -s ipv4.icanhazip.com)
+echo -e "${GREEN}[OK] 公网 IP：$IP${RESET}"
 
-# ======================================================
-# 下载 MTProxy
-# ======================================================
+# --------------------------
+# 生成 Secret
+# --------------------------
+SECRET32=$(head -c 32 /dev/urandom | xxd -ps)
+SECRET64=$(head -c 64 /dev/urandom | xxd -ps)
+
+echo -e "${GREEN}[OK] 32 位 Secret：$SECRET32${RESET}"
+echo -e "${GREEN}[OK] 64 位 Secret：$SECRET64${RESET}"
+
+# --------------------------
+# 下载 MTProxy 源码
+# --------------------------
 rm -rf "$INSTALL_ROOT"
-git clone https://github.com/alexbers/mtprotoproxy.git "$INSTALL_ROOT"
+git clone https://github.com/alexbers/mtprotoproxy "$INSTALL_ROOT"
 
-# ======================================================
-# 写入 config.py（含两个 secret）
-# ======================================================
+echo -e "${GREEN}[OK] 配置文件写入：$INSTALL_ROOT/config.py${RESET}"
+
+# --------------------------
+# 写入配置文件
+# --------------------------
 cat > "$INSTALL_ROOT/config.py" <<EOF
-PORT = $PORT
+PORT = 443
 USERS = {
-    "user32": "$SECRET32",
-    "user64": "$SECRET64"
+    "user1": "$SECRET32"
 }
+MODENAME = "MTProxy"
+FAKE_TLS_DOMAIN = ""
 EOF
 
-ok "配置文件已写入：$INSTALL_ROOT/config.py"
-
-# ======================================================
-# systemd 服务
-# ======================================================
-SERVICE="/etc/systemd/system/MTProxy.service"
-
-cat > "$SERVICE" <<EOF
+# --------------------------
+# 创建 systemd 服务
+# --------------------------
+cat > /etc/systemd/system/MTProxy.service <<EOF
 [Unit]
-Description=MTProto Proxy (Local)
+Description=MTProxy Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 $INSTALL_ROOT/mtprotoproxy.py $INSTALL_ROOT/config.py
-Restart=always
-RestartSec=2
 WorkingDirectory=$INSTALL_ROOT
-LimitNOFILE=200000
+ExecStart=/usr/bin/python3 $INSTALL_ROOT/mtprotoproxy.py
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl restart MTProxy
 systemctl enable MTProxy
-ok "systemd 服务已启动"
+systemctl restart MTProxy
+echo -e "${GREEN}[OK] MTProxy 服务已启动${RESET}"
 
-# ======================================================
-# watchdog（自愈脚本）
-# ======================================================
-WATCHDOG="/usr/local/bin/watchdog_mtp.sh"
-LOG="/var/log/mtproxy_watchdog.log"
-
+# --------------------------
+# 写 watchdog（自愈）
+# --------------------------
 cat > "$WATCHDOG" <<EOF
 #!/bin/bash
-CONF="$INSTALL_ROOT/config.py"
 SERVICE="MTProxy.service"
+PORT=\$(grep PORT /opt/mtprotoproxy/config.py | grep -oE '[0-9]+')
 LOG="/var/log/mtproxy_watchdog.log"
 
-timestamp(){ date "+%Y-%m-%d %H:%M:%S"; }
-PORT=\$(grep PORT "\$CONF" | grep -oE '[0-9]+')
+timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 
-if ! systemctl is-active --quiet "\$SERVICE"; then
-    echo "\$(timestamp) systemd 服务停止，修复中..." >> "\$LOG"
-    systemctl restart "\$SERVICE"
+if ! systemctl is-active --quiet \$SERVICE; then
+    echo "\$(timestamp) systemd 未运行 → 正在重启" >> \$LOG
+    systemctl restart \$SERVICE
 fi
 
 if ! pgrep -f "mtprotoproxy.py" >/dev/null; then
-    echo "\$(timestamp) 进程丢失，修复中..." >> "\$LOG"
-    systemctl restart "\$SERVICE"
+    echo "\$(timestamp) 进程丢失 → 正在恢复" >> \$LOG
+    systemctl restart \$SERVICE
 fi
 
-if ! ss -tuln | grep -q "\$PORT"; then
-    echo "\$(timestamp) 端口 \$PORT 未监听，修复中..." >> "\$LOG"
-    systemctl restart "\$SERVICE"
+if ! ss -tuln | grep -q ":\$PORT "; then
+    echo "\$(timestamp) 端口 \$PORT 未监听 → 正在修复" >> \$LOG
+    systemctl restart \$SERVICE
 fi
 EOF
 
 chmod +x "$WATCHDOG"
-(
-    crontab -l 2>/dev/null | grep -v "$WATCHDOG"
-    echo "* * * * * $WATCHDOG >/dev/null 2>&1"
-) | crontab -
 
-ok "watchdog 已安装并启用"
+# 避免未安装 cron 报错
+if command -v crontab >/dev/null; then
+    (crontab -l 2>/dev/null | grep -v "$WATCHDOG"; echo "* * * * * $WATCHDOG >/dev/null 2>&1") | crontab -
+    echo -e "${GREEN}[OK] Watchdog 已加入 crontab${RESET}"
+else
+    echo -e "${YELLOW}[WARN] 未找到 crontab，watchdog 未启用${RESET}"
+fi
 
-# ======================================================
-# 安装 mtp 管理工具
-# ======================================================
-cat > /usr/local/bin/mtp <<EOF
-#!/bin/bash
-
-INSTALL_ROOT="$INSTALL_ROOT"
-CONF="\$INSTALL_ROOT/config.py"
-IP=\$(wget -qO- ipv4.icanhazip.com)
-SERVICE="MTProxy.service"
-LOG="/var/log/mtproxy_watchdog.log"
-WATCHDOG="/usr/local/bin/watchdog_mtp.sh"
-
-GREEN="\\e[32m"; RESET="\\e[0m"
-
-menu(){
-echo -e "\${GREEN}
-=============== MTProxy 管理菜单 ===============
-1) 查看状态
-2) 输出连接（含 32/64 位 secret）
-3) 重启服务
-4) 修改端口
-5) 新建 Secret（重置 32 位）
-6) 添加 Secret（追加用户）
-7) 卸载 MTProxy
-----------------------------------------------
-8) 查看 watchdog 日志
-9) 手动执行 watchdog
-0) 退出
-==============================================\${RESET}"
-}
-
-show_status(){
-    systemctl status "\$SERVICE" --no-pager
-    echo ""
-    cat "\$CONF"
-}
-
-show_links(){
-    PORT=\$(grep PORT "\$CONF" | grep -oE '[0-9]+')
-    SECRETS=\$(grep -oP '"\\w+": "\\K[a-f0-9]+' "\$CONF")
-
-    for S in \$SECRETS; do
-        echo "tg://proxy?server=\$IP&port=\$PORT&secret=dd\$S"
-        echo "https://t.me/proxy?server=\$IP&port=\$PORT&secret=dd\$S"
-        echo ""
-    done
-}
-
-restart_service(){
-    systemctl restart "\$SERVICE"
-}
-
-change_port(){
-    read -p "新端口: " NEW
-    sed -i "s/^PORT.*/PORT = \$NEW/" "\$CONF"
-    restart_service
-}
-
-new_secret(){
-    NEW=\$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/user32\": \".*\"/user32\": \"\$NEW\"/" "\$CONF"
-    restart_service
-    echo "新的 SECRET32：\$NEW"
-}
-
-add_secret(){
-    read -p "新用户名: " NAME
-    NEW=\$(head -c 16 /dev/urandom | xxd -ps)
-    sed -i "s/}/,\"\$NAME\": \"\$NEW\"}/" "\$CONF"
-    restart_service
-    echo "已添加：\$NAME=\$NEW"
-}
-
-show_log(){
-    tail -n 50 "\$LOG"
-}
-
-run_watchdog(){
-    bash "\$WATCHDOG"
-}
-
-uninstall_mtproxy(){
-    systemctl stop "\$SERVICE"
-    systemctl disable "\$SERVICE"
-    rm -rf "\$INSTALL_ROOT"
-    rm -f "/etc/systemd/system/\$SERVICE"
-    echo "MTProxy 已卸载"
-}
-
-while true; do
-    menu
-    read -p "选择功能：" CH
-    case "\$CH" in
-        1) show_status ;;
-        2) show_links ;;
-        3) restart_service ;;
-        4) change_port ;;
-        5) new_secret ;;
-        6) add_secret ;;
-        7) uninstall_mtproxy ;;
-        8) show_log ;;
-        9) run_watchdog ;;
-        0) exit 0 ;;
-        *) echo "无效输入" ;;
-    esac
-done
+# --------------------------
+# 写入 mtp 管理工具
+# --------------------------
+cat > "$MTP_CLI" <<EOF
+#!/usr/bin/env bash
+/usr/local/bin/mtp_menu_internal
 EOF
 
-chmod +x /usr/local/bin/mtp
-ok "管理工具 mtp 已安装"
+chmod +x "$MTP_CLI"
 
-# ======================================================
-# 安装完成后显示连接（无 JSON 输出）
-# ======================================================
+# --------------------------
+# 内部菜单脚本
+# --------------------------
+cat > /usr/local/bin/mtp_menu_internal <<'EOF'
+#!/usr/bin/env bash
+echo -e "\e[32m
+================ MTProxy 管理菜单 ================
+1) 查看状态
+2) 输出代理连接
+3) 重启服务
+0) 退出
+=================================================\e[0m"
 
-echo ""
-echo -e "${GREEN}================= MTProxy 安装完成 =================${RESET}"
-echo ""
-echo -e "${YELLOW}>>> 公网 IP：${RESET} $IP"
-echo -e "${YELLOW}>>> 端口：${RESET} $PORT"
-echo ""
+read -p "选择功能: " CH
+case $CH in
+    1) systemctl status MTProxy;;
+    2) IP=$(wget -qO- ipv4.icanhazip.com)
+       PORT=$(grep PORT /opt/mtprotoproxy/config.py | grep -oE '[0-9]+')
+       SECRET=$(grep -oE '"user1": "[a-f0-9]+"' /opt/mtprotoproxy/config.py | awk -F'"' '{print $4}')
+       echo "tg://proxy?server=$IP&port=$PORT&secret=dd$SECRET"
+       ;;
+    3) systemctl restart MTProxy;;
+    *) exit;;
+esac
+EOF
 
-echo -e "${GREEN}------ 32 位 Secret ------${RESET}"
-echo "Secret32: $SECRET32"
-echo "tg://proxy?server=$IP&port=$PORT&secret=dd$SECRET32"
-echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET32"
-echo ""
+chmod +x /usr/local/bin/mtp_menu_internal
 
-echo -e "${GREEN}------ 64 位 Secret ------${RESET}"
-echo "Secret64: $SECRET64"
-echo "tg://proxy?server=$IP&port=$PORT&secret=dd$SECRET64"
-echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET64"
-echo ""
+echo -e "${GREEN}[OK] 管理工具 mtp 已安装${RESET}"
 
-echo -e "${GREEN}=======================================================${RESET}"
+# --------------------------
+# 输出连接
+# --------------------------
+echo -e "${GREEN}
+========== 安装完成 ==========
+IP: $IP
+Port: 443
 
-# 自动进入菜单
-read -p "按 Enter 键进入 MTProxy 管理菜单（mtp）..." _
-mtp
+MTProto 链接（32位）：
+tg://proxy?server=$IP&port=443&secret=dd$SECRET32
+
+MTProto 链接（64位）：
+tg://proxy?server=$IP&port=443&secret=dd$SECRET64
+==============================
+${RESET}"
