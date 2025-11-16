@@ -8,14 +8,14 @@ ok(){ echo -e "${GREEN}[OK] $1${RESET}"; }
 err(){ echo -e "${RED}[ERROR] $1${RESET}"; }
 
 # ======================================================
-# 基准路径（以当前目录为根）
+# 基准路径（以当前目录为根目录）
 # ======================================================
 ABS=$(readlink -f "$0")
 BASE_DIR=$(dirname "$ABS")
 INSTALL_ROOT="$BASE_DIR/mtprotoproxy"
 
 # ======================================================
-# 依赖安装
+# 安装依赖
 # ======================================================
 ok "安装依赖中..."
 apt update -y
@@ -150,8 +150,8 @@ echo -e "\${GREEN}
 2) 输出连接（含 32/64 位 secret）
 3) 重启服务
 4) 修改端口
-5) 新建 Secret
-6) 添加 Secret
+5) 新建 Secret（重置 32 位）
+6) 添加 Secret（追加用户）
 7) 卸载 MTProxy
 ----------------------------------------------
 8) 查看 watchdog 日志
@@ -235,23 +235,63 @@ while true; do
         *) echo "无效输入" ;;
     esac
 done
-
 EOF
 
 chmod +x /usr/local/bin/mtp
 ok "管理工具 mtp 已安装"
 
 # ======================================================
-# 安装完成后自动显示连接 + 自动运行 mtp
+# 安装完成后自动显示连接（含 JSON 输出）
 # ======================================================
+
 echo ""
-echo -e "${GREEN}================= 安装完成 =================${RESET}"
-echo "32 位链接："
-echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET32"
+echo -e "${GREEN}================= MTProxy 安装完成 =================${RESET}"
 echo ""
-echo "64 位链接："
-echo "https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET64"
+echo -e "${YELLOW}>>> 公网 IP：${RESET} $IP"
+echo -e "${YELLOW}>>> 端口：${RESET} $PORT"
 echo ""
-echo -e "${GREEN}正在自动打开 mtp 管理菜单...${RESET}"
-sleep 2
+
+# ------------------ 32 位 ------------------
+echo -e "${GREEN}------ 32 位 Secret ------${RESET}"
+echo "Secret32: $SECRET32"
+LINK32_TG="tg://proxy?server=$IP&port=$PORT&secret=dd$SECRET32"
+LINK32_HTTP="https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET32"
+echo "$LINK32_TG"
+echo "$LINK32_HTTP"
+echo ""
+
+# ------------------ 64 位 ------------------
+echo -e "${GREEN}------ 64 位 Secret ------${RESET}"
+echo "Secret64: $SECRET64"
+LINK64_TG="tg://proxy?server=$IP&port=$PORT&secret=dd$SECRET64"
+LINK64_HTTP="https://t.me/proxy?server=$IP&port=$PORT&secret=dd$SECRET64"
+echo "$LINK64_TG"
+echo "$LINK64_HTTP"
+echo ""
+
+echo -e "${GREEN}=======================================================${RESET}"
+
+# ------------------ JSON 输出 ------------------
+cat <<EOF
+
+JSON 输出（可供程序读取）：
+
+{
+  "ip": "$IP",
+  "port": $PORT,
+  "secret32": "$SECRET32",
+  "secret64": "$SECRET64",
+  "links": {
+    "tg32": "$LINK32_TG",
+    "tg64": "$LINK64_TG",
+    "http32": "$LINK32_HTTP",
+    "http64": "$LINK64_HTTP"
+  }
+}
+
+EOF
+
+# 等待回车进入 mtp
+read -p "按 Enter 键进入 MTProxy 管理菜单（mtp）..." _
+
 mtp
