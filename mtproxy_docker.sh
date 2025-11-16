@@ -1,7 +1,8 @@
 #!/bin/bash
 # ================================================================
-# MTProxy Docker 一键安装脚本
-# 作者：cnshiyi 适配 alexdoesh/mtproxy（Alpine 版）
+# MTProxy Docker 安装脚本（修复版）
+# 固定端口：10086
+# 作者：cnshiyi / ChatGPT 修复增强版
 # ================================================================
 
 set -e
@@ -18,10 +19,19 @@ err()  { echo -e "${RED}[ERR]${RESET} $1"; }
 IP=$(wget -qO- ipv4.icanhazip.com || echo "0.0.0.0")
 
 # ----------------------------------------------------------------
-# 默认端口（已修改为 10010）
+# 端口固定为 10086
 # ----------------------------------------------------------------
-read -p "请输入 MTProxy 端口（默认 10010）: " PORT
-PORT=${PORT:-10010}
+PORT=10086
+log "固定端口：$PORT"
+
+# ----------------------------------------------------------------
+# 检查并安装 xxd
+# ----------------------------------------------------------------
+if ! command -v xxd >/dev/null 2>&1; then
+    warn "xxd 未安装，正在自动安装..."
+    apt update -y
+    apt install -y xxd
+fi
 
 # ----------------------------------------------------------------
 # 安装 Docker
@@ -39,9 +49,9 @@ fi
 # 创建目录并生成 secret
 # ----------------------------------------------------------------
 mkdir -p /opt/mtproxy/config
-SECRET=$(head -c 16 /dev/urandom | xxd -ps)
+SECRET=$(head -c 16 /dev/urandom | xxd -ps | tr -d '\n')
 
-echo "$SECRET" > /opt/mtproxy/config/secret
+echo -n "$SECRET" > /opt/mtproxy/config/secret
 
 log "生成 Secret：$SECRET"
 log "配置目录：/opt/mtproxy/config"
@@ -78,5 +88,4 @@ echo
 echo -e "t.me  链接：\n${GREEN}${TM_LINK}${RESET}"
 echo
 echo -e "==============================================================="
-
 log "MTProxy 安装并启动成功！"
