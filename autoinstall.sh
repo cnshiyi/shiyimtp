@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-#   MTProxy 一键部署脚本 autoinstall.sh (最终版)
+#   MTProxy 一键自动安装脚本  autoinstall.sh
 # ================================================
 
 set -e
@@ -10,7 +10,7 @@ GIT_REPO="https://github.com/alexbers/mtprotoproxy.git"
 CHECK_FILE="/etc/mtproxy_installed.flag"
 
 # ----------------------------------------
-# 获取公网 IP
+# 公网 IP
 # ----------------------------------------
 IP=$(wget -qO- ipv4.icanhazip.com)
 
@@ -18,7 +18,7 @@ IP=$(wget -qO- ipv4.icanhazip.com)
 # 检查是否已安装
 # ----------------------------------------
 if [ -f "$CHECK_FILE" ]; then
-    echo "⚠️  检测到 MTProxy 已安装，如需重新安装请执行： rm $CHECK_FILE"
+    echo "⚠️  MTProxy 已安装。如需重新安装请执行： rm $CHECK_FILE"
     exit 1
 fi
 
@@ -29,7 +29,7 @@ read -p "请输入 MTProxy 端口（默认 10086）： " PORT
 PORT=${PORT:-10086}
 
 # ----------------------------------------
-# 自动生成 32 位 Hex Secret
+# 自动生成 32 位 HEX Secret
 # ----------------------------------------
 SECRET=$(head -c 16 /dev/urandom | xxd -ps)
 
@@ -61,7 +61,7 @@ USERS = {"tg": "${SECRET}"}
 EOF
 
 # ----------------------------------------
-# 创建 systemd 服务
+# 生成 systemd 服务
 # ----------------------------------------
 cat >/etc/systemd/system/MTProxy.service <<EOF
 [Unit]
@@ -111,21 +111,16 @@ systemctl enable --now MTProxy
 systemctl enable --now mtproxy-watchdog.service
 
 # ----------------------------------------
-# 生成管理工具 mtp (修复 Secret 提取问题)
+# 生成管理工具
 # ----------------------------------------
-cat >/usr/local/bin/mtp <<'EOF'
+cat >/usr/local/bin/mtp <<EOF
 #!/bin/bash
 
 CONF=/opt/mtprotoproxy/config.py
-IP=$(wget -qO- ipv4.icanhazip.com)
-
-# 端口
-PORT=$(grep -oP "(?<=PORT\s*=\s*)\d+" "$CONF")
-
-# Secret（支持单双引号 + 任意空格）
-SECRET=$(grep -oP '(?<=(\"|'"'"')tg(\"|'"'"')\s*:\s*(\"|'"'"'))[0-9a-f]{32}(?=(\"|'"'"'))' "$CONF")
-
-TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=dd${SECRET}"
+IP=\$(wget -qO- ipv4.icanhazip.com)
+PORT=\$(grep -oP "(?<=PORT = ).*" \$CONF)
+SECRET=\$(grep -oP '(?<=tg":\\s*")[0-9a-f]+' \$CONF)
+TG_LINK="https://t.me/proxy?server=\${IP}&port=\${PORT}&secret=dd\${SECRET}"
 
 menu() {
   clear
@@ -145,23 +140,23 @@ while true; do
     menu
     read -r CH
 
-    case "$CH" in
+    case "\$CH" in
     1) systemctl status MTProxy --no-pager;;
-    2) systemctl start MTProxy; echo "✔ 已启动";;
-    3) systemctl stop MTProxy; echo "✔ 已停止";;
-    4) systemctl restart MTProxy; echo "✔ 已重启";;
+    2) systemctl start MTProxy;;
+    3) systemctl stop MTProxy;;
+    4) systemctl restart MTProxy;;
     5) journalctl -u MTProxy -f;;
     6)
-        echo "============== MTProxy 连接信息 =============="
-        echo "IP: $IP"
-        echo "Port: $PORT"
-        echo "Secret: $SECRET"
-        echo "链接："
-        echo "$TG_LINK"
-        echo "=============================================="
+        echo "======== MTProxy 连接信息 ========"
+        echo "IP: \$IP"
+        echo "Port: \$PORT"
+        echo "Secret: \$SECRET"
+        echo ""
+        echo "\$TG_LINK"
+        echo "================================="
         ;;
     0) exit 0;;
-    *) echo "输入无效";;
+    *) echo "无效选项";;
     esac
     echo ""
     read -p "按回车继续..."
@@ -176,9 +171,9 @@ chmod +x /usr/local/bin/mtp
 echo "installed" > $CHECK_FILE
 
 # ----------------------------------------
-# 输出安装信息
+# 输出安装结果
 # ----------------------------------------
-TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=dd${SECRET}"
+TG_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=dd${SECRET}"
 
 echo ""
 echo "==============================================="
@@ -193,3 +188,5 @@ echo "$TG_LINK"
 echo ""
 echo "👉 管理工具： mtp"
 echo "==============================================="
+
+exit 0
