@@ -1,10 +1,26 @@
-[Unit] 
-Description=MTProxy 
-After=network.target 
-[Service] 
-Type=simple 
-WorkingDirectory=/opt/mtprotoproxy 
-ExecStart=/opt/mtprotoproxy/mtprotoproxy.py 
-Restart=on-failure 
-[Install] 
+[Unit]
+Description=MTProto Proxy Daemon with Auto-Restart
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/mtprotoproxy/mtprotoproxy.py /opt/mtprotoproxy/config.py
+WorkingDirectory=/opt/mtprotoprotoxy
+User=root
+
+Restart=always
+RestartSec=2
+# 如果 5 秒内崩溃超过 10 次 → 自动继续尝试
+StartLimitBurst=50
+
+# 资源限制（防止运行时卡死）
+LimitNOFILE=100000
+LimitNPROC=100000
+
+# 自动写日志
+StandardOutput=journal
+StandardError=journal
+
+[Install]
 WantedBy=multi-user.target
