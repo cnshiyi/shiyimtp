@@ -1,272 +1,190 @@
 #!/bin/bash
-# ============================================================
-# Cloudflare WARP (wgcf) + FakeTLS (ee) + MTG 一键安装脚本
-# 完整修复版：不使用 warp.sh / menu.sh，不依赖 raw.githubusercontent
-# 仅使用 GitHub Releases 下载 wgcf / mtg 二进制
-# ============================================================
+###
+ # @Author: Vincent Young
+ # @Date: 2022-07-01 15:29:23
+ # @LastEditors: Vincent Young
+ # @LastEditTime: 2022-07-30 19:26:45
+ # @FilePath: /MTProxy/mtproxy.sh
+ # @Telegram: https://t.me/missuo
+ # 
+ # Copyright © 2022 by Vincent, All Rights Reserved. 
+### 
 
-set -e
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
+export PATH
 
-GREEN="\e[32m"; RED="\e[31m"; YELLOW="\e[33m"; RESET="\e[0m"
-ok(){ echo -e "${GREEN}[OK]${RESET} $1"; }
-err(){ echo -e "${RED}[ERROR]${RESET} $1"; exit 1; }
-warn(){ echo -e "${YELLOW}[WARN]${RESET} $1"; }
+# Define Color
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+plain='\033[0m'
 
-[[ $EUID -ne 0 ]] && err "请使用 root 运行（sudo -i）"
+# Make sure run with root
+[[ $EUID -ne 0 ]] && echo -e "[${red}Error${plain}]Please run this script with ROOT!" && exit 1
 
-# ------------------------------------------------------------
-# 依赖安装
-# ------------------------------------------------------------
-ok "安装系统依赖..."
-apt update -y >/dev/null 2>&1 || true
-apt install -y curl wget sudo xxd tar git make resolvconf >/dev/null 2>&1 || \
-  err "依赖安装失败（curl/wget/git 等）"
+download_file(){
+	echo "Checking System..."
 
-# WireGuard 依赖（Debian/Ubuntu 系）
-apt install -y wireguard wireguard-tools >/dev/null 2>&1 || \
-  warn "wireguard 安装失败，请手动检查内核是否自带 WireGuard"
+	bit=`uname -m`
+	if [[ ${bit} = "x86_64" ]]; then
+		bit="amd64"
+    elif [[ ${bit} = "aarch64" ]]; then
+        bit="arm64"
+    else
+	    bit="386"
+    fi
 
-# ------------------------------------------------------------
-# CPU 架构识别（仅支持 amd64 / arm64）
-# ------------------------------------------------------------
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64|amd64)  CPU_ARCH="amd64" ;;
-  aarch64|arm64) CPU_ARCH="arm64" ;;
-  *)
-    err "当前架构 $ARCH 暂不支持（只支持 x86_64 / aarch64）"
-    ;;
-esac
-ok "CPU 架构：$ARCH → $CPU_ARCH"
-
-# ------------------------------------------------------------
-# 安装 wgcf（WARP CLI，来自 GitHub Releases）
-# ------------------------------------------------------------
-WGCF_VER="2.2.24"   # 稳定版本
-WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VER}/wgcf_${WGCF_VER}_linux_${CPU_ARCH}"
-
-ok "下载 wgcf：$WGCF_URL"
-cd /tmp
-wget -q "$WGCF_URL" -O wgcf || err "下载 wgcf 失败"
-chmod +x wgcf
-mv wgcf /usr/local/bin/wgcf
-
-# ------------------------------------------------------------
-# 注册 WARP 账号 & 生成 WireGuard 配置
-# ------------------------------------------------------------
-ok "注册 WARP 账号（wgcf register）..."
-yes | wgcf register >/tmp/wgcf-register.log 2>&1 || {
-  cat /tmp/wgcf-register.log
-  err "wgcf register 失败"
+    last_version=$(curl -Ls "https://api.github.com/repos/9seconds/mtg/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ ! -n "$last_version" ]]; then
+        echo -e "${red}Failure to detect mtg version may be due to exceeding Github API limitations, please try again later."
+        exit 1
+    fi
+    echo -e "Latest version of mtg detected: ${last_version}, start installing..."
+    version=$(echo ${last_version} | sed 's/v//g')
+    wget -N --no-check-certificate -O mtg-${version}-linux-${bit}.tar.gz https://github.com/9seconds/mtg/releases/download/${last_version}/mtg-${version}-linux-${bit}.tar.gz
+    if [[ ! -f "mtg-${version}-linux-${bit}.tar.gz" ]]; then
+        echo -e "${red}Download mtg-${version}-linux-${bit}.tar.gz failed, please try again."
+        exit 1
+    fi
+    tar -xzf mtg-${version}-linux-${bit}.tar.gz
+    mv mtg-${version}-linux-${bit}/mtg /usr/bin/mtg
+    rm -f mtg-${version}-linux-${bit}.tar.gz
+    rm -rf mtg-${version}-linux-${bit}
+    chmod +x /usr/bin/mtg
+    echo -e "mtg-${version}-linux-${bit}.tar.gz installed successfully, start to configure..."
 }
 
-ok "生成 WARP WireGuard 配置（wgcf generate）..."
-wgcf generate >/tmp/wgcf-generate.log 2>&1 || {
-  cat /tmp/wgcf-generate.log
-  err "wgcf generate 失败"
+configure_mtg(){
+    echo -e "Configuring mtg..."
+    wget -N --no-check-certificate -O /etc/mtg.toml https://raw.githubusercontent.com/missuo/MTProxy/main/mtg.toml
+    
+    echo ""
+    read -p "Please enter a spoofed domain (default itunes.apple.com): " domain
+	[ -z "${domain}" ] && domain="itunes.apple.com"
+
+	echo ""
+    read -p "Enter the port to be listened to (default 8443):" port
+	[ -z "${port}" ] && port="8443"
+
+    secret=$(mtg generate-secret --hex $domain)
+    
+    echo "Waiting configuration..."
+
+    sed -i "s/secret.*/secret = \"${secret}\"/g" /etc/mtg.toml
+    sed -i "s/bind-to.*/bind-to = \"0.0.0.0:${port}\"/g" /etc/mtg.toml
+
+    echo "mtg configured successfully, start to configure systemctl..."
 }
 
-# 默认生成 wgcf-profile.conf
-if [[ ! -f wgcf-profile.conf ]]; then
-  err "未找到 wgcf-profile.conf，wgcf generate 出问题了"
-fi
-
-# ------------------------------------------------------------
-# 安装到 /etc/wireguard/wgcf.conf
-# ------------------------------------------------------------
-ok "写入 /etc/wireguard/wgcf.conf ..."
-mkdir -p /etc/wireguard
-cp wgcf-profile.conf /etc/wireguard/wgcf.conf
-
-# 一般不需要改 AllowedIPs/Endpoint，如需只走出口，可在这里做 sed 修改
-
-chmod 600 /etc/wireguard/wgcf.conf
-
-# ------------------------------------------------------------
-# 启动 WARP：wg-quick@wgcf
-# ------------------------------------------------------------
-ok "启动 WARP（wg-quick@wgcf）..."
-systemctl enable wg-quick@wgcf >/dev/null 2>&1 || warn "enable wg-quick@wgcf 失败"
-systemctl restart wg-quick@wgcf || err "启动 wg-quick@wgcf 失败，请检查 WireGuard"
-
-sleep 3
-
-# 检查 WARP 状态
-TRACE=$(curl -s https://www.cloudflare.com/cdn-cgi/trace || true)
-WARP_FLAG=$(echo "$TRACE" | grep '^warp=' | cut -d= -f2)
-
-if [[ "$WARP_FLAG" != "on" ]]; then
-  warn "WARP 似乎没有成功启用（warp=$WARP_FLAG），后续可用 watchdog 自动修复"
-else
-  ok "WARP 已启用（warp=on）"
-fi
-
-# ------------------------------------------------------------
-# 选择 MTProto 端口
-# ------------------------------------------------------------
-read -p "请输入 MTProto 监听端口（默认 443）: " MTG_PORT
-MTG_PORT=${MTG_PORT:-443}
-ok "监听端口：$MTG_PORT"
-
-# ------------------------------------------------------------
-# FakeTLS 伪装域名池
-# ------------------------------------------------------------
-DOMAINS=(
-  "fonts.gstatic.com"
-  "developer.apple.com"
-  "support.apple.com"
-  "api.ipify.org"
-  "imgur.com"
-  "steamstat.us"
-  "fastly.com"
-  "global.bing.com"
-  "avatars.githubusercontent.com"
-)
-
-FAKETLS_DOMAIN=${DOMAINS[$RANDOM % ${#DOMAINS[@]}]}
-ok "FakeTLS 伪装域名：$FAKETLS_DOMAIN"
-
-# ------------------------------------------------------------
-# 安装 MTG（二进制来自 GitHub Releases）
-# ------------------------------------------------------------
-ok "安装 MTG..."
-
-MTG_VER="2.1.7"
-if [[ "$CPU_ARCH" == "amd64" ]]; then
-  MTG_FILE="mtg-linux-amd64"
-else
-  MTG_FILE="mtg-linux-arm64"
-fi
-
-MTG_URL="https://github.com/9seconds/mtg/releases/download/v${MTG_VER}/${MTG_FILE}"
-
-wget -q "$MTG_URL" -O /usr/local/bin/mtg || err "下载 MTG 失败：$MTG_URL"
-chmod +x /usr/local/bin/mtg
-
-# ------------------------------------------------------------
-# 生成 FakeTLS Secret（ee 开头）
-# ------------------------------------------------------------
-FAKETLS_SECRET=$(mtg generate-secret tls -c "$FAKETLS_DOMAIN" | tr -d '\n')
-
-if [[ "$FAKETLS_SECRET" != ee* ]]; then
-  warn "生成的 Secret 不是 ee 开头：$FAKETLS_SECRET"
-else
-  ok "FakeTLS Secret 生成成功（ee 开头）"
-fi
-
-# ------------------------------------------------------------
-# 写入 systemd 服务：mtg-faketls
-# ------------------------------------------------------------
-ok "创建 MTG systemd 服务..."
-
-cat >/etc/systemd/system/mtg-faketls.service <<EOF
-[Unit]
-Description=MTG FakeTLS Proxy
-After=network-online.target wg-quick@wgcf.service
-Wants=wg-quick@wgcf.service
-
-[Service]
-ExecStart=/usr/local/bin/mtg run -b 0.0.0.0:${MTG_PORT} ${FAKETLS_SECRET}
-Restart=always
-RestartSec=3
-LimitNOFILE=200000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable mtg-faketls
-systemctl restart mtg-faketls
-
-ok "MTG FakeTLS 服务已启动"
-
-# ------------------------------------------------------------
-# 安装管理脚本 mtgctl
-# ------------------------------------------------------------
-cat >/usr/local/bin/mtgctl <<EOF
-#!/bin/bash
-case "\$1" in
-  start) systemctl start mtg-faketls ;;
-  stop) systemctl stop mtg-faketls ;;
-  restart) systemctl restart mtg-faketls ;;
-  status) systemctl status mtg-faketls ;;
-  logs|log) journalctl -u mtg-faketls -e ;;
-  *) echo "用法：mtgctl {start|stop|restart|status|logs}" ;;
-esac
-EOF
-
-chmod +x /usr/local/bin/mtgctl
-ok "管理命令已安装：mtgctl"
-
-# ------------------------------------------------------------
-# watchdog：自动检测 Telegram 是否可达
-# ------------------------------------------------------------
-cat >/usr/local/bin/mtg-watchdog <<'EOF'
-#!/bin/bash
-LOG=/var/log/mtg-watchdog.log
-DATE=$(date "+%F %T")
-
-check() {
-    CODE=$(curl -I -m 5 -o /dev/null -s -w "%{http_code}" https://core.telegram.org || echo 000)
-    [[ "$CODE" == "200" ]]
+configure_systemctl(){
+    echo -e "Configuring systemctl..."
+    wget -N --no-check-certificate -O /etc/systemd/system/mtg.service https://raw.githubusercontent.com/missuo/MTProxy/main/mtg.service
+    systemctl enable mtg
+    systemctl start mtg
+    echo "mtg configured successfully, start to configure firewall..."
+    systemctl disable firewalld
+    systemctl stop firewalld
+    ufw disable
+    echo "mtg start successfully, enjoy it!"
+    echo ""
+    public_ip=$(curl -s ipv4.ip.sb)
+    subscription_config="tg://proxy?server=${public_ip}&port=${port}&secret=${secret}"
+    subscription_link="https://t.me/proxy?server=${public_ip}&port=${port}&secret=${secret}"
+    echo -e "${subscription_config}"
+    echo -e "${subscription_link}"
 }
 
-echo "[$DATE] 检测 Telegram..." >> $LOG
+change_port(){
+    read -p "Enter the port you want to modify(default 8443):" port
+	[ -z "${port}" ] && port="8443"
+    sed -i "s/bind-to.*/bind-to = \"0.0.0.0:${port}\"/g" /etc/mtg.toml
+    echo "Restarting MTProxy..."
+    systemctl restart mtg
+    echo "MTProxy restarted successfully!"
+}
 
-if check; then
-    echo "[$DATE] Telegram 正常" >> $LOG
-    exit 0
-fi
+change_secret(){
+    echo -e "Please note that unauthorized modification of Secret may cause MTProxy to not function properly."
+    read -p "Enter the secret you want to modify:" secret
+	[ -z "${secret}" ] && secret="$(mtg generate-secret --hex itunes.apple.com)"
+    sed -i "s/secret.*/secret = \"${secret}\"/g" /etc/mtg.toml
+    echo "Secret changed successfully!"
+    echo "Restarting MTProxy..."
+    systemctl restart mtg
+    echo "MTProxy restarted successfully!"
+}
 
-echo "[$DATE] Telegram 不可达 → 重启 WARP(wg-quick@wgcf)" >> $LOG
-systemctl restart wg-quick@wgcf
-sleep 3
+update_mtg(){
+    echo -e "Updating mtg..."
+    download_file
+    echo "mtg updated successfully, start to restart MTProxy..."
+    systemctl restart mtg
+    echo "MTProxy restarted successfully!"
+}
 
-if check; then
-    echo "[$DATE] 重启 WARP 后恢复正常" >> $LOG
-    exit 0
-fi
+start_menu() {
+    clear
+    echo -e "  MTProxy v2 一键管理脚本
+---- by Vincent | github.com/missuo/MTProxy ----
+ ${green} 1.${plain} 安装 MTProxy
+ ${green} 2.${plain} 卸载 MTProxy
+————————————
+ ${green} 3.${plain} 启动 MTProxy
+ ${green} 4.${plain} 停止 MTProxy
+ ${green} 5.${plain} 重启 MTProxy
+ ${green} 6.${plain} 修改监听端口
+ ${green} 7.${plain} 修改 Secret
+ ${green} 8.${plain} 更新 MTProxy
+————————————
+ ${green} 0.${plain} 退出脚本
+————————————" && echo
 
-echo "[$DATE] 仍不可达 → 重启 MTG" >> $LOG
-systemctl restart mtg-faketls
-sleep 3
-
-if check; then
-    echo "[$DATE] 重启 MTG 后恢复正常" >> $LOG
-    exit 0
-fi
-
-echo "[$DATE] 多次修复失败，需要人工检查" >> $LOG
-EOF
-
-chmod +x /usr/local/bin/mtg-watchdog
-ok "watchdog 已安装：/usr/local/bin/mtg-watchdog"
-
-# ------------------------------------------------------------
-# 加入 cron，每分钟检测一次
-# ------------------------------------------------------------
-(crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/mtg-watchdog") | crontab -
-ok "已加入 crontab：每分钟检测 Telegram + 自动修复 WARP/MTG"
-
-# ------------------------------------------------------------
-# 输出连接信息
-# ------------------------------------------------------------
-SERVER_IP=$(curl -4s ifconfig.me || echo "YOUR_SERVER_IP")
-
-echo
-echo "=============================================================="
-echo "  ✅ WARP (wgcf) + FakeTLS（ee）+ MTG 已安装完成"
-echo "=============================================================="
-echo "服务器真实 IP：$SERVER_IP"
-echo "监听端口：$MTG_PORT"
-echo "伪装域名：$FAKETLS_DOMAIN"
-echo "FakeTLS Secret：$FAKETLS_SECRET"
-echo
-echo "代理链接："
-echo "tg://proxy?server=${SERVER_IP}&port=${MTG_PORT}&secret=${FAKETLS_SECRET}"
-echo
-echo "管理命令： mtgctl start | stop | restart | status | logs"
-echo "watchdog 日志： /var/log/mtg-watchdog.log"
-echo "=============================================================="
-echo
+	read -e -p " 请输入数字 [0-8]: " num
+	case "$num" in
+    1)
+		download_file
+        configure_mtg
+        configure_systemctl
+		;;
+    2)
+        echo "正在卸载 MTProxy..."
+        systemctl stop mtg
+        systemctl disable mtg
+        rm -rf /usr/bin/mtg
+        rm -rf /etc/mtg.toml
+        rm -rf /etc/systemd/system/mtg.service
+        echo "MTProxy 卸载成功！"
+        ;;
+    3) 
+        echo "正在启动 MTProxy..."
+        systemctl start mtg
+        systemctl enable mtg
+        echo "MTProxy 启动成功！"
+        ;;
+    4) 
+        echo "正在停止 MTProxy..."
+        systemctl stop mtg
+        systemctl disable mtg
+        echo "MTProxy 停止成功！"
+        ;;
+    5)  
+        echo "正在重启 MTProxy..."
+        systemctl restart mtg
+        echo "MTProxy 重启成功！"
+        ;;
+    6) 
+        change_port
+        ;;
+    7)
+        change_secret
+        ;;
+    8)
+        update_mtg
+        ;;
+    0) exit 0
+        ;;
+    *) echo -e "${Error} 请输入正确数字 [0-8]！ "
+        ;;
+    esac
+}
+start_menu
