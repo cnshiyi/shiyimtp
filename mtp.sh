@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# Cloudflare WARP + FakeTLS (ee) + MTG 一键安装脚本
-# 完整修复版（2025.11）
-# 作者：ChatGPT 为 cnshiyi 特制
+# Cloudflare WARP (wgcf) + FakeTLS (ee) + MTG 一键安装脚本
+# 完整修复版：不使用 warp.sh / menu.sh，不依赖 raw.githubusercontent
+# 仅使用 GitHub Releases 下载 wgcf / mtg 二进制
 # ============================================================
 
 set -e
@@ -19,41 +19,97 @@ warn(){ echo -e "${YELLOW}[WARN]${RESET} $1"; }
 # ------------------------------------------------------------
 ok "安装系统依赖..."
 apt update -y >/dev/null 2>&1 || true
-apt install -y curl wget sudo xxd tar git make >/dev/null 2>&1 \
-|| err "依赖安装失败"
+apt install -y curl wget sudo xxd tar git make resolvconf >/dev/null 2>&1 || \
+  err "依赖安装失败（curl/wget/git 等）"
+
+# WireGuard 依赖（Debian/Ubuntu 系）
+apt install -y wireguard wireguard-tools >/dev/null 2>&1 || \
+  warn "wireguard 安装失败，请手动检查内核是否自带 WireGuard"
 
 # ------------------------------------------------------------
-# WARP 安装（修复所有 403/404）
+# CPU 架构识别（仅支持 amd64 / arm64）
 # ------------------------------------------------------------
-ok "安装 Cloudflare WARP..."
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64|amd64)  CPU_ARCH="amd64" ;;
+  aarch64|arm64) CPU_ARCH="arm64" ;;
+  *)
+    err "当前架构 $ARCH 暂不支持（只支持 x86_64 / aarch64）"
+    ;;
+esac
+ok "CPU 架构：$ARCH → $CPU_ARCH"
 
-# 三重下载源：GitLab（主）→ GitHub（次）→ jsDelivr（备）
-wget -N https://gitlab.com/fscarmen/warp/-/raw/main/warp.sh -O warp.sh \
-|| wget -N https://raw.githubusercontent.com/fscarmen/warp/main/warp.sh -O warp.sh \
-|| wget -N https://cdn.jsdelivr.net/gh/fscarmen/warp/warp.sh -O warp.sh \
-|| err "下载 WARP 安装脚本失败（GitLab/GitHub/jsDelivr 全部失败）"
+# ------------------------------------------------------------
+# 安装 wgcf（WARP CLI，来自 GitHub Releases）
+# ------------------------------------------------------------
+WGCF_VER="2.2.24"   # 稳定版本
+WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VER}/wgcf_${WGCF_VER}_linux_${CPU_ARCH}"
 
-chmod +x warp.sh
+ok "下载 wgcf：$WGCF_URL"
+cd /tmp
+wget -q "$WGCF_URL" -O wgcf || err "下载 wgcf 失败"
+chmod +x wgcf
+mv wgcf /usr/local/bin/wgcf
 
-# 安装 + 启用 WARP
-echo "1" | bash warp.sh >/dev/null 2>&1
-echo "2" | bash warp.sh >/dev/null 2>&1
+# ------------------------------------------------------------
+# 注册 WARP 账号 & 生成 WireGuard 配置
+# ------------------------------------------------------------
+ok "注册 WARP 账号（wgcf register）..."
+yes | wgcf register >/tmp/wgcf-register.log 2>&1 || {
+  cat /tmp/wgcf-register.log
+  err "wgcf register 失败"
+}
+
+ok "生成 WARP WireGuard 配置（wgcf generate）..."
+wgcf generate >/tmp/wgcf-generate.log 2>&1 || {
+  cat /tmp/wgcf-generate.log
+  err "wgcf generate 失败"
+}
+
+# 默认生成 wgcf-profile.conf
+if [[ ! -f wgcf-profile.conf ]]; then
+  err "未找到 wgcf-profile.conf，wgcf generate 出问题了"
+fi
+
+# ------------------------------------------------------------
+# 安装到 /etc/wireguard/wgcf.conf
+# ------------------------------------------------------------
+ok "写入 /etc/wireguard/wgcf.conf ..."
+mkdir -p /etc/wireguard
+cp wgcf-profile.conf /etc/wireguard/wgcf.conf
+
+# 一般不需要改 AllowedIPs/Endpoint，如需只走出口，可在这里做 sed 修改
+
+chmod 600 /etc/wireguard/wgcf.conf
+
+# ------------------------------------------------------------
+# 启动 WARP：wg-quick@wgcf
+# ------------------------------------------------------------
+ok "启动 WARP（wg-quick@wgcf）..."
+systemctl enable wg-quick@wgcf >/dev/null 2>&1 || warn "enable wg-quick@wgcf 失败"
+systemctl restart wg-quick@wgcf || err "启动 wg-quick@wgcf 失败，请检查 WireGuard"
+
+sleep 3
 
 # 检查 WARP 状态
-warp_status=$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep warp | cut -d= -f2)
-[[ "$warp_status" != "on" ]] && err "WARP 启动失败！请检查 WireGuard 是否可用"
+TRACE=$(curl -s https://www.cloudflare.com/cdn-cgi/trace || true)
+WARP_FLAG=$(echo "$TRACE" | grep '^warp=' | cut -d= -f2)
 
-ok "WARP 已启动（流量走 Cloudflare 节点出口）"
+if [[ "$WARP_FLAG" != "on" ]]; then
+  warn "WARP 似乎没有成功启用（warp=$WARP_FLAG），后续可用 watchdog 自动修复"
+else
+  ok "WARP 已启用（warp=on）"
+fi
 
 # ------------------------------------------------------------
-# 选择端口
+# 选择 MTProto 端口
 # ------------------------------------------------------------
 read -p "请输入 MTProto 监听端口（默认 443）: " MTG_PORT
 MTG_PORT=${MTG_PORT:-443}
 ok "监听端口：$MTG_PORT"
 
 # ------------------------------------------------------------
-# FakeTLS 域名池
+# FakeTLS 伪装域名池
 # ------------------------------------------------------------
 DOMAINS=(
   "fonts.gstatic.com"
@@ -71,37 +127,37 @@ FAKETLS_DOMAIN=${DOMAINS[$RANDOM % ${#DOMAINS[@]}]}
 ok "FakeTLS 伪装域名：$FAKETLS_DOMAIN"
 
 # ------------------------------------------------------------
-# 安装 MTG（FakeTLS 引擎）
+# 安装 MTG（二进制来自 GitHub Releases）
 # ------------------------------------------------------------
 ok "安装 MTG..."
 
 MTG_VER="2.1.7"
-ARCH=$(uname -m)
-[[ "$ARCH" == "x86_64" ]] && MTG_ARCH="linux-amd64"
-[[ "$ARCH" == "aarch64" ]] && MTG_ARCH="linux-arm64"
+if [[ "$CPU_ARCH" == "amd64" ]]; then
+  MTG_FILE="mtg-linux-amd64"
+else
+  MTG_FILE="mtg-linux-arm64"
+fi
 
-MTG_TAR="mtg-${MTG_VER}-${MTG_ARCH}.tar.gz"
-MTG_URL="https://github.com/9seconds/mtg/releases/download/v${MTG_VER}/${MTG_TAR}"
+MTG_URL="https://github.com/9seconds/mtg/releases/download/v${MTG_VER}/${MTG_FILE}"
 
-wget -q $MTG_URL -O /tmp/$MTG_TAR || err "MTG 下载失败"
-tar -xzf /tmp/$MTG_TAR -C /tmp
-
-MTG_BIN=$(tar -tf /tmp/$MTG_TAR | head -n1)
-mv "/tmp/$MTG_BIN" /usr/local/bin/mtg
+wget -q "$MTG_URL" -O /usr/local/bin/mtg || err "下载 MTG 失败：$MTG_URL"
 chmod +x /usr/local/bin/mtg
 
 # ------------------------------------------------------------
 # 生成 FakeTLS Secret（ee 开头）
 # ------------------------------------------------------------
 FAKETLS_SECRET=$(mtg generate-secret tls -c "$FAKETLS_DOMAIN" | tr -d '\n')
-[[ "$FAKETLS_SECRET" != ee* ]] && warn "生成的 Secret 不是 ee 开头？"
 
-ok "FakeTLS Secret：$FAKETLS_SECRET"
+if [[ "$FAKETLS_SECRET" != ee* ]]; then
+  warn "生成的 Secret 不是 ee 开头：$FAKETLS_SECRET"
+else
+  ok "FakeTLS Secret 生成成功（ee 开头）"
+fi
 
 # ------------------------------------------------------------
-# systemd 服务（MTG 守护）
+# 写入 systemd 服务：mtg-faketls
 # ------------------------------------------------------------
-ok "创建 systemd 服务..."
+ok "创建 MTG systemd 服务..."
 
 cat >/etc/systemd/system/mtg-faketls.service <<EOF
 [Unit]
@@ -123,10 +179,10 @@ systemctl daemon-reload
 systemctl enable mtg-faketls
 systemctl restart mtg-faketls
 
-ok "MTG 服务已启动"
+ok "MTG FakeTLS 服务已启动"
 
 # ------------------------------------------------------------
-# 安装 mtgctl 管理脚本
+# 安装管理脚本 mtgctl
 # ------------------------------------------------------------
 cat >/usr/local/bin/mtgctl <<EOF
 #!/bin/bash
@@ -136,9 +192,7 @@ case "\$1" in
   restart) systemctl restart mtg-faketls ;;
   status) systemctl status mtg-faketls ;;
   logs|log) journalctl -u mtg-faketls -e ;;
-  *)
-    echo "用法：mtgctl {start|stop|restart|status|logs}"
-    ;;
+  *) echo "用法：mtgctl {start|stop|restart|status|logs}" ;;
 esac
 EOF
 
@@ -146,42 +200,40 @@ chmod +x /usr/local/bin/mtgctl
 ok "管理命令已安装：mtgctl"
 
 # ------------------------------------------------------------
-# watchdog 自动检测脚本（每分钟检测 Telegram）
+# watchdog：自动检测 Telegram 是否可达
 # ------------------------------------------------------------
-ok "安装自动检测 watchdog..."
-
 cat >/usr/local/bin/mtg-watchdog <<'EOF'
 #!/bin/bash
 LOG=/var/log/mtg-watchdog.log
 DATE=$(date "+%F %T")
 
 check() {
-    CODE=$(curl -I -m 5 -o /dev/null -s -w "%{http_code}" https://core.telegram.org)
+    CODE=$(curl -I -m 5 -o /dev/null -s -w "%{http_code}" https://core.telegram.org || echo 000)
     [[ "$CODE" == "200" ]]
 }
 
 echo "[$DATE] 检测 Telegram..." >> $LOG
 
 if check; then
-    echo "[$DATE] 正常" >> $LOG
+    echo "[$DATE] Telegram 正常" >> $LOG
     exit 0
 fi
 
-echo "[$DATE] Telegram 不可达 → 重启 WARP" >> $LOG
+echo "[$DATE] Telegram 不可达 → 重启 WARP(wg-quick@wgcf)" >> $LOG
 systemctl restart wg-quick@wgcf
 sleep 3
 
 if check; then
-    echo "[$DATE] WARP 修复成功" >> $LOG
+    echo "[$DATE] 重启 WARP 后恢复正常" >> $LOG
     exit 0
 fi
 
-echo "[$DATE] 修复失败 → 重启 MTG" >> $LOG
+echo "[$DATE] 仍不可达 → 重启 MTG" >> $LOG
 systemctl restart mtg-faketls
 sleep 3
 
 if check; then
-    echo "[$DATE] MTG 修复成功" >> $LOG
+    echo "[$DATE] 重启 MTG 后恢复正常" >> $LOG
     exit 0
 fi
 
@@ -189,23 +241,24 @@ echo "[$DATE] 多次修复失败，需要人工检查" >> $LOG
 EOF
 
 chmod +x /usr/local/bin/mtg-watchdog
+ok "watchdog 已安装：/usr/local/bin/mtg-watchdog"
 
 # ------------------------------------------------------------
-# Cron 定时任务
+# 加入 cron，每分钟检测一次
 # ------------------------------------------------------------
 (crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/mtg-watchdog") | crontab -
+ok "已加入 crontab：每分钟检测 Telegram + 自动修复 WARP/MTG"
 
 # ------------------------------------------------------------
-# 输出代理连接信息
+# 输出连接信息
 # ------------------------------------------------------------
-SERVER_IP=$(curl -4s ifconfig.me)
+SERVER_IP=$(curl -4s ifconfig.me || echo "YOUR_SERVER_IP")
 
 echo
 echo "=============================================================="
-echo "  WARP + FakeTLS（ee）+ MTG 安装成功！"
+echo "  ✅ WARP (wgcf) + FakeTLS（ee）+ MTG 已安装完成"
 echo "=============================================================="
 echo "服务器真实 IP：$SERVER_IP"
-echo "出口 IP（WARP）：$(curl -4s ifconfig.me)"
 echo "监听端口：$MTG_PORT"
 echo "伪装域名：$FAKETLS_DOMAIN"
 echo "FakeTLS Secret：$FAKETLS_SECRET"
@@ -214,6 +267,6 @@ echo "代理链接："
 echo "tg://proxy?server=${SERVER_IP}&port=${MTG_PORT}&secret=${FAKETLS_SECRET}"
 echo
 echo "管理命令： mtgctl start | stop | restart | status | logs"
-echo "日志文件： /var/log/mtg-watchdog.log"
+echo "watchdog 日志： /var/log/mtg-watchdog.log"
 echo "=============================================================="
 echo
