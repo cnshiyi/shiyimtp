@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================
 # Cloudflare WARP + FakeTLS (ee) + MTG
-# 一键安装脚本（带进程守护 + 启动脚本 + 系统服务）
-# 作者：ChatGPT（专为用户定制版）
+# 一键安装脚本（带进程守护 + 启动脚本 + 自动检测）
+# 版本：2025.11（最新修复版，无 GitLab 403 问题）
+# 作者：ChatGPT 为 cnshiyi 定制
 # ============================================================
 
 set -e
@@ -12,45 +13,49 @@ ok(){ echo -e "${GREEN}[OK]${RESET} $1"; }
 err(){ echo -e "${RED}[ERROR]${RESET} $1"; exit 1; }
 warn(){ echo -e "${YELLOW}[WARN]${RESET} $1"; }
 
-[[ $EUID -ne 0 ]] && err "请使用 root 用户运行（sudo -i）"
-
-apt update -y >/dev/null 2>&1 || true
-apt install -y curl wget sudo xxd tar git make >/dev/null 2>&1 || \
-err "无法安装基础依赖，请检查网络或系统源。"
+[[ $EUID -ne 0 ]] && err "请使用 root 用户运行"
 
 # ------------------------------------------------------------
-# 安装 Cloudflare WARP
+# 安装依赖
+# ------------------------------------------------------------
+apt update -y >/dev/null 2>&1 || true
+apt install -y curl wget sudo xxd tar git make >/dev/null 2>&1 || \
+err "无法安装基础依赖"
+
+# ------------------------------------------------------------
+# 安装 Cloudflare WARP（使用安全镜像源）
 # ------------------------------------------------------------
 ok "安装 Cloudflare WARP..."
 
-wget -N https://gitlab.com/wyx1816/warp-script/raw/main/menu.sh -O warp.sh
+wget -N https://cdn.jsdelivr.net/gh/fscarmen/warp/menu.sh -O warp.sh || \
+wget -N https://raw.githubusercontent.com/fscarmen/warp/main/menu.sh -O warp.sh
+
 chmod +x warp.sh
 
 echo "1" | bash warp.sh >/dev/null 2>&1
 echo "2" | bash warp.sh >/dev/null 2>&1
 
 warp_status=$(curl -s https://www.cloudflare.com/cdn-cgi/trace | grep warp | cut -d= -f2)
-[[ "$warp_status" != "on" ]] && err "WARP 启动失败，请检查 WireGuard 是否正常！"
+[[ "$warp_status" != "on" ]] && err "WARP 启动失败"
 
-ok "WARP 已启用（Cloudflare 节点出口）"
+ok "WARP 已启用（全局走 Cloudflare 节点出口）"
 
 # ------------------------------------------------------------
-# 选择端口
+# 选择 MTProto 端口
 # ------------------------------------------------------------
 read -p "请输入 MTProto 监听端口（默认 443）: " MTG_PORT
 MTG_PORT=${MTG_PORT:-443}
 ok "监听端口：$MTG_PORT"
 
 # ------------------------------------------------------------
-# 随机 FakeTLS 域名
+# FakeTLS 域名池
 # ------------------------------------------------------------
 DOMAINS=(
   "fonts.gstatic.com"
-  "api.ipify.org"
-  "imgur.com"
   "developer.apple.com"
   "support.apple.com"
-  "sentry.io"
+  "api.ipify.org"
+  "imgur.com"
   "avatars.githubusercontent.com"
   "assets-cdn.github.com"
   "steamstat.us"
@@ -62,10 +67,11 @@ FAKETLS_DOMAIN=${DOMAINS[$RANDOM % ${#DOMAINS[@]}]}
 ok "FakeTLS 伪装域名：$FAKETLS_DOMAIN"
 
 # ------------------------------------------------------------
-# 下载 MTG
+# 安装 MTG（FakeTLS 引擎）
 # ------------------------------------------------------------
 MTG_VER="2.1.7"
 ARCH=$(uname -m)
+
 [[ "$ARCH" == "x86_64" ]] && MTG_ARCH="linux-amd64"
 [[ "$ARCH" == "aarch64" ]] && MTG_ARCH="linux-arm64"
 
@@ -82,22 +88,22 @@ mv "$BIN" /usr/local/bin/mtg
 chmod +x /usr/local/bin/mtg
 
 # ------------------------------------------------------------
-# FakeTLS Secret
+# 生成 FakeTLS Secret（ee 开头）
 # ------------------------------------------------------------
 FAKETLS_SECRET=$(mtg generate-secret tls -c "$FAKETLS_DOMAIN" | tr -d '\n')
-[[ "$FAKETLS_SECRET" != ee* ]] && warn "FakeTLS Secret 并非 ee 开头"
+[[ "$FAKETLS_SECRET" != ee* ]] && warn "FakeTLS Secret 不是 ee 开头？"
 
 ok "FakeTLS Secret：$FAKETLS_SECRET"
 
 # ------------------------------------------------------------
-# systemd 服务
+# 写入 systemd 服务（守护 + 开机自启）
 # ------------------------------------------------------------
 SERVICE=/etc/systemd/system/mtg-faketls.service
 
 cat > $SERVICE <<EOF
 [Unit]
-Description=MTG FakeTLS Proxy
-After=network-online.target wg-quick@wgcf.service
+Description=MTG FakeTLS Proxy (Cloudflare WARP)
+After=network.target wg-quick@wgcf.service
 Wants=wg-quick@wgcf.service
 
 [Service]
@@ -114,6 +120,8 @@ EOF
 systemctl daemon-reload
 systemctl enable mtg-faketls
 systemctl restart mtg-faketls
+
+ok "MTG 服务已启动并守护"
 
 # ------------------------------------------------------------
 # 安装管理脚本 mtgctl
@@ -137,7 +145,7 @@ chmod +x /usr/local/bin/mtgctl
 ok "管理脚本安装完成：mtgctl"
 
 # ------------------------------------------------------------
-# 安装 watchdog 监控脚本
+# 安装自动检测脚本 watchdog
 # ------------------------------------------------------------
 cat >/usr/local/bin/mtg-watchdog <<'EOF'
 #!/bin/bash
@@ -164,30 +172,30 @@ systemctl restart wg-quick@wgcf >/dev/null 2>&1
 sleep 4
 
 if check_tg; then
-    echo "[$DATESTR] WARP 修复成功" >> $LOGFILE
+    echo "[$DATESTR] 重启 WARP 成功" >> $LOGFILE
     exit 0
 fi
 
-echo "[$DATESTR] WARP 修复失败 → 重启 MTG" >> $LOGFILE
+echo "[$DATESTR] WARP 无效 → 重启 MTG" >> $LOGFILE
 systemctl restart mtg-faketls >/dev/null 2>&1
 sleep 3
 
 if check_tg; then
-    echo "[$DATESTR] MTG 重启后恢复" >> $LOGFILE
+    echo "[$DATESTR] MTG 修复成功" >> $LOGFILE
     exit 0
 fi
 
-echo "[$DATESTR] 多次修复失败，需要检查服务器。" >> $LOGFILE
+echo "[$DATESTR] 多次修复失败，需要检查系统" >> $LOGFILE
 EOF
 
 chmod +x /usr/local/bin/mtg-watchdog
-ok "自动检测 watchdog 安装完成"
+
+ok "自动检测脚本安装完成"
 
 # ------------------------------------------------------------
-# 配置 cron 定时检测
+# 加入 cron 定时任务（每分钟检测一次）
 # ------------------------------------------------------------
 (crontab -l 2>/dev/null; echo "* * * * * /usr/local/bin/mtg-watchdog") | crontab -
-ok "已设置每分钟自动检测 Telegram 连接状态"
 
 # ------------------------------------------------------------
 # 输出结果
@@ -195,19 +203,18 @@ ok "已设置每分钟自动检测 Telegram 连接状态"
 SERVER_IP=$(curl -4s ifconfig.me)
 
 echo -e "\n=============================================================="
-echo "          Cloudflare WARP + FakeTLS（ee） + MTG"
-echo "                      安装已完成！"
+echo "              Cloudflare WARP + FakeTLS（ee） + MTG"
+echo "                        已全部安装完成！"
 echo "=============================================================="
 echo "服务器真实 IP：$SERVER_IP"
 echo "出口 IP（WARP）：$(curl -4s ifconfig.me)"
 echo "监听端口：$MTG_PORT"
-echo "FakeTLS 域名：$FAKETLS_DOMAIN"
+echo "伪装域名：$FAKETLS_DOMAIN"
 echo "FakeTLS Secret：$FAKETLS_SECRET"
 echo
-echo "👉 Telegram 代理链接："
+echo "👉 代理链接："
 echo "tg://proxy?server=${SERVER_IP}&port=${MTG_PORT}&secret=${FAKETLS_SECRET}"
 echo
-echo "管理命令："
-echo "  mtgctl start | stop | restart | status | logs"
-echo "日志：/var/log/mtg-watchdog.log"
+echo "管理命令： mtgctl start | stop | restart | status | logs"
+echo "日志文件：/var/log/mtg-watchdog.log"
 echo "=============================================================="
