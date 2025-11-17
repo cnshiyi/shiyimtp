@@ -1,31 +1,53 @@
-# MTProxy and SOCKS5 auto installer
+<!--
+ * @Author: Vincent Young
+ * @Date: 2022-07-01 15:29:23
+ * @LastEditors: Vincent Young
+ * @LastEditTime: 2022-07-30 19:28:49
+ * @FilePath: /MTProxy/README.md
+ * @Telegram: https://t.me/missuo
+ * 
+ * Copyright © 2022 by Vincent, All Rights Reserved. 
+-->
+# MTProxy
+Highly-opinionated (ex-bullshit-free) MTPROTO proxy for [Telegram](https://telegram.org).
 
-Simple and very fast installer for mtprotoproxy.
+## Intro
+**If you have used MTProxy before, you must be using Version 1. At present, the scripts on the Internet are basically Version 1. And my script uses the new Version 2.**
 
-# Get Started
+### Differences between v1 and v2
+- Configuration file incompatibility
+- v2 completely removes TAG
+- FakeTLS encryption is used in v2
 
-### Requirements
+### Updates
+#### July 30th, 2022
+- Support for modifying the listening port
+- Support for modifying secret
+- Support for updating to latest version of MTProxy
 
-If you want to install MTProxy, open 1443 port, if you want to install SOCKS5, open 1080 port.
+#### July 1st, 2022
+- Add subscription config
+- Add subscription link
 
-## How to install MTProxy (user friendly)?
+## Supportability
+- X86_64
+- ARM_64
 
-1. `curl -s https://raw.githubusercontent.com/aire1/mtproxy_autoinstaller/stable/autoinstall.sh | sh` and get your personal MTProxy.       
+## Installation
+**This script uses the latest release of [9seconds/mtg](https://github.com/9seconds/mtg) by default**
+~~~shell
+bash <(curl -Ls https://ssa.sx/mtg)
+~~~
+**Due to the CDN cache, jsdelivr link may not be the latest.**
+~~~shell
+bash <(curl -Ls https://cdn.jsdelivr.net/gh/missuo/MTProxy/mtproxy.sh)
+~~~
 
-### How to install (manual)?
-1. `git clone -b stable https://github.com/aire1/mtproxy_autoinstaller.git; cd mtproxy_autoinstaller`
-2. `sudo chmod ugo+x install.sh && sudo chmod ugo+x socks_install.sh && sudo chmod ugo+x set_AD_TAG.sh`
-3. `./install.sh` (or `./socks_install.sh` if you want to install socks5 proxy)
-4. Just copy link and use your proxy!
+## Open Source Used
+[9seconds/mtg](https://github.com/9seconds/mtg)
 
-### Advanced install
-- You can set your own secret for MTProxy (it should be 32-chars HEX 0-9 a-f), just write it after `./install.sh`
-(`./install.sh <secret>`)
-- You can set your own login and password for socks5 proxy, just write it after `./socks_install.sh`          
-(`./socks_install.sh <login> <password>`)
-- Of course you can set your own AD_TAG, just write if after `./set_AD_TAG.sh`                 
-(`./set_AD_TAG.sh <AD_TAG>`)
+## Author
 
-# License
+**MTProxy** © [Vincent Young](https://github.com/missuo), Released under the [MIT](./LICENSE) License.<br>
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details
+
