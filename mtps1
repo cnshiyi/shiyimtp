@@ -1,0 +1,158 @@
+#!/bin/bash
+
+### ================================
+### 预处理：停止旧 MTProxy
+### ================================
+echo -e "\n=== 停止旧 MTProxy ==="
+if [[ -d /home/mtproxy ]]; then
+    cd /home/mtproxy
+    if [[ -f mtproxy.sh ]]; then
+        bash mtproxy.sh stop || echo "[WARN] 旧 MTProxy 未运行或无法停止"
+    else
+        echo "[WARN] 未找到 /home/mtproxy/mtproxy.sh"
+    fi
+else
+    echo "[WARN] /home/mtproxy 目录不存在"
+fi
+echo "=== 预处理完成 ==="
+
+
+### ================================
+### 固定参数
+### ================================
+FAKE_DOMAIN="azure.microsoft.com"
+FIXED_PORT="443"
+
+BASE_DIR="$(pwd)"
+MTG_BIN="${BASE_DIR}/mtg"
+MTG_CONF="${BASE_DIR}/mtg.toml"
+MTG_SERVICE="/etc/systemd/system/mtg.service"
+
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+plain='\033[0m'
+
+[[ $EUID -ne 0 ]] && echo -e "[${red}Error${plain}] 必须使用 ROOT 运行脚本！" && exit 1
+
+
+### ================================
+### 功能：显示当前连接
+### ================================
+show_link() {
+    if [[ ! -f "${MTG_CONF}" ]]; then
+        echo -e "${red}未找到 mtg.toml，无法显示连接。${plain}"
+        return
+    fi
+
+    port=$(grep '^bind-to' "$MTG_CONF" | sed -E 's/.*:(.*)".*/\1/')
+    secret=$(grep '^secret' "$MTG_CONF" | sed -E 's/.*"([^"]+)".*/\1/')
+    public_ip=$(curl -s ipv4.ip.sb)
+
+    tg1="tg://proxy?server=${public_ip}&port=${port}&secret=${secret}"
+    tg2="https://t.me/proxy?server=${public_ip}&port=${port}&secret=${secret}"
+
+    echo -e "\n${green}====== MTProxy 连接 ======${plain}"
+    echo -e "$tg1"
+    echo -e "$tg2"
+    echo -e "${green}===========================${plain}\n"
+}
+
+
+### ================================
+### 功能：下载 MTG
+### ================================
+download_mtg() {
+    echo "Checking system..."
+
+    bit=$(uname -m)
+    if [[ "$bit" == "x86_64" ]]; then bit="amd64"; fi
+    if [[ "$bit" == "aarch64" ]]; then bit="arm64"; fi
+    if [[ "$bit" != "amd64" && "$bit" != "arm64" ]]; then bit="386"; fi
+
+    last_version=$(curl -Ls https://api.github.com/repos/9seconds/mtg/releases/latest \
+        | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+
+    [[ -z "$last_version" ]] && echo -e "${red}无法获取版本号${plain}" && exit 1
+
+    echo "Latest: $last_version"
+    version=${last_version#v}
+
+    wget -N -O mtg-${version}-linux-${bit}.tar.gz \
+        https://github.com/9seconds/mtg/releases/download/${last_version}/mtg-${version}-linux-${bit}.tar.gz
+
+    tar -xzf mtg-${version}-linux-${bit}.tar.gz
+    mv mtg-${version}-linux-${bit}/mtg "$MTG_BIN"
+    chmod +x "$MTG_BIN"
+
+    rm -rf mtg-${version}-linux-${bit}*
+}
+
+
+### ================================
+### 功能：生成配置文件
+### ================================
+generate_conf() {
+    wget -N -O "$MTG_CONF" \
+        https://raw.githubusercontent.com/missuo/MTProxy/main/mtg.toml
+
+    secret=$("${MTG_BIN}" generate-secret --hex "$FAKE_DOMAIN")
+
+    sed -i "s/secret.*/secret = \"${secret}\"/g" "$MTG_CONF"
+    sed -i "s/bind-to.*/bind-to = \"0.0.0.0:${FIXED_PORT}\"/g" "$MTG_CONF"
+}
+
+
+### ================================
+### 功能：创建 systemd 服务
+### ================================
+setup_service() {
+cat > "$MTG_SERVICE" <<EOF
+[Unit]
+Description=MTProxy Service
+After=network.target
+
+[Service]
+ExecStart=${MTG_BIN} run ${MTG_CONF}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable mtg
+}
+
+
+### ================================
+### 安装流程
+### ================================
+install_mtg() {
+    echo -e "${green}开始安装 MTProxy...${plain}"
+
+    download_mtg
+    generate_conf
+    setup_service
+
+    systemctl restart mtg
+    echo -e "${green}MTProxy 安装完成！${plain}"
+
+    show_link
+}
+
+
+### ================================
+### 主流程：检测是否已安装 → 再决定安装/重启
+### ================================
+echo -e "${green}检查是否已安装 MTProxy...${plain}"
+
+if [[ -f "$MTG_BIN" && -f "$MTG_CONF" ]]; then
+    echo -e "${yellow}检测到 MTProxy 已安装 → 自动重启${plain}"
+    systemctl restart mtg
+    show_link
+else
+    echo -e "${yellow}未找到安装文件 → 执行安装${plain}"
+    install_mtg
+fi
