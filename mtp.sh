@@ -87,6 +87,8 @@ configure_systemctl(){
     ufw disable
     echo "mtg start successfully, enjoy it!"
     echo ""
+    # echo "mtg configuration:"
+    # mtg_config=$(mtg access /etc/mtg.toml)
     public_ip=$(curl -s ipv4.ip.sb)
     subscription_config="tg://proxy?server=${public_ip}&port=${port}&secret=${secret}"
     subscription_link="https://t.me/proxy?server=${public_ip}&port=${port}&secret=${secret}"
@@ -124,7 +126,7 @@ update_mtg(){
 
 start_menu() {
     clear
-    echo -e "  MTProxy v2 一键管理脚本
+    echo -e "  MTProxy v2 One-Click Installation
 ---- by Vincent | github.com/missuo/MTProxy ----
  ${green} 1.${plain} 安装 MTProxy
  ${green} 2.${plain} 卸载 MTProxy
@@ -139,7 +141,7 @@ start_menu() {
  ${green} 0.${plain} 退出脚本
 ————————————" && echo
 
-	read -e -p " 请输入数字 [0-8]: " num
+	read -e -p " 请输入数字 [0-8]:" num
 	case "$num" in
     1)
 		download_file
@@ -147,30 +149,30 @@ start_menu() {
         configure_systemctl
 		;;
     2)
-        echo "正在卸载 MTProxy..."
+        echo "Uninstall MTProxy..."
         systemctl stop mtg
         systemctl disable mtg
         rm -rf /usr/bin/mtg
         rm -rf /etc/mtg.toml
         rm -rf /etc/systemd/system/mtg.service
-        echo "MTProxy 卸载成功！"
+        echo "Uninstall MTProxy successfully!"
         ;;
     3) 
-        echo "正在启动 MTProxy..."
+        echo "Starting MTProxy..."
         systemctl start mtg
         systemctl enable mtg
-        echo "MTProxy 启动成功！"
+        echo "MTProxy started successfully!"
         ;;
     4) 
-        echo "正在停止 MTProxy..."
+        echo "Stopping MTProxy..."
         systemctl stop mtg
         systemctl disable mtg
-        echo "MTProxy 停止成功！"
+        echo "MTProxy stopped successfully!"
         ;;
     5)  
-        echo "正在重启 MTProxy..."
+        echo "Restarting MTProxy..."
         systemctl restart mtg
-        echo "MTProxy 重启成功！"
+        echo "MTProxy restarted successfully!"
         ;;
     6) 
         change_port
@@ -183,7 +185,7 @@ start_menu() {
         ;;
     0) exit 0
         ;;
-    *) echo -e "${Error} 请输入正确数字 [0-8]！ "
+    *) echo -e "${Error} Please enter a number [0-8]: "
         ;;
     esac
 }
