@@ -1,192 +1,258 @@
 #!/bin/bash
 ###
- # @Author: Vincent Young
- # @Date: 2022-07-01 15:29:23
- # @LastEditors: Vincent Young
- # @LastEditTime: 2022-07-30 19:26:45
- # @FilePath: /MTProxy/mtproxy.sh
- # @Telegram: https://t.me/missuo
- # 
- # Copyright © 2022 by Vincent, All Rights Reserved. 
-### 
+# MTG 多实例管理终极版
+# @Author: ChatGPT Ultra Edition
+# @Version: 3.0
+# 支持无限实例、独立配置、命令模式 + 菜单模式、多实例 systemd、自动生成 Secret
+###
 
-PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
-export PATH
+set -e
 
-# Define Color
-red='\033[0;31m'
-green='\033[0;32m'
-yellow='\033[0;33m'
-plain='\033[0m'
+BASE_DIR=$(dirname $(readlink -f $0))
+INSTANCE_DIR="${BASE_DIR}/instances"
+BIN="${BASE_DIR}/mtg"
 
-# Make sure run with root
-[[ $EUID -ne 0 ]] && echo -e "[${red}Error${plain}]Please run this script with ROOT!" && exit 1
+green="\033[32m"; red="\033[31m"; yellow="\033[33m"; plain="\033[0m"
 
-download_file(){
-	echo "Checking System..."
 
-	bit=`uname -m`
-	if [[ ${bit} = "x86_64" ]]; then
-		bit="amd64"
-    elif [[ ${bit} = "aarch64" ]]; then
-        bit="arm64"
-    else
-	    bit="386"
-    fi
-
-    last_version=$(curl -Ls "https://api.github.com/repos/9seconds/mtg/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [[ ! -n "$last_version" ]]; then
-        echo -e "${red}Failure to detect mtg version may be due to exceeding Github API limitations, please try again later."
-        exit 1
-    fi
-    echo -e "Latest version of mtg detected: ${last_version}, start installing..."
-    version=$(echo ${last_version} | sed 's/v//g')
-    wget -N --no-check-certificate -O mtg-${version}-linux-${bit}.tar.gz https://github.com/9seconds/mtg/releases/download/${last_version}/mtg-${version}-linux-${bit}.tar.gz
-    if [[ ! -f "mtg-${version}-linux-${bit}.tar.gz" ]]; then
-        echo -e "${red}Download mtg-${version}-linux-${bit}.tar.gz failed, please try again."
-        exit 1
-    fi
-    tar -xzf mtg-${version}-linux-${bit}.tar.gz
-    mv mtg-${version}-linux-${bit}/mtg /usr/bin/mtg
-    rm -f mtg-${version}-linux-${bit}.tar.gz
-    rm -rf mtg-${version}-linux-${bit}
-    chmod +x /usr/bin/mtg
-    echo -e "mtg-${version}-linux-${bit}.tar.gz installed successfully, start to configure..."
+# ---------------------------------------------
+# 公共函数
+# ---------------------------------------------
+ensure_dirs() {
+    [[ -d "$INSTANCE_DIR" ]] || mkdir -p "$INSTANCE_DIR"
 }
 
-configure_mtg(){
-    echo -e "Configuring mtg..."
-    wget -N --no-check-certificate -O /etc/mtg.toml https://raw.githubusercontent.com/missuo/MTProxy/main/mtg.toml
-    
-    echo ""
-    read -p "Please enter a spoofed domain (default itunes.apple.com): " domain
-	[ -z "${domain}" ] && domain="itunes.apple.com"
-
-	echo ""
-    read -p "Enter the port to be listened to (default 8443):" port
-	[ -z "${port}" ] && port="8443"
-
-    secret=$(mtg generate-secret --hex $domain)
-    
-    echo "Waiting configuration..."
-
-    sed -i "s/secret.*/secret = \"${secret}\"/g" /etc/mtg.toml
-    sed -i "s/bind-to.*/bind-to = \"0.0.0.0:${port}\"/g" /etc/mtg.toml
-
-    echo "mtg configured successfully, start to configure systemctl..."
+check_root() {
+    [[ $EUID -ne 0 ]] && echo -e "[${red}错误${plain}] 请使用 root 运行脚本" && exit 1
 }
 
-configure_systemctl(){
-    echo -e "Configuring systemctl..."
-    wget -N --no-check-certificate -O /etc/systemd/system/mtg.service https://raw.githubusercontent.com/missuo/MTProxy/main/mtg.service
-    systemctl enable mtg
-    systemctl start mtg
-    echo "mtg configured successfully, start to configure firewall..."
-    systemctl disable firewalld
-    systemctl stop firewalld
-    ufw disable
-    echo "mtg start successfully, enjoy it!"
-    echo ""
-    # echo "mtg configuration:"
-    # mtg_config=$(mtg access /etc/mtg.toml)
-    public_ip=$(curl -s ipv4.ip.sb)
-    subscription_config="tg://proxy?server=${public_ip}&port=${port}&secret=${secret}"
-    subscription_link="https://t.me/proxy?server=${public_ip}&port=${port}&secret=${secret}"
-    echo -e "${subscription_config}"
-    echo -e "${subscription_link}"
+public_ip() {
+    curl -s ipv4.ip.sb || curl -s ifconfig.me || echo "0.0.0.0"
 }
 
-change_port(){
-    read -p "Enter the port you want to modify(default 8443):" port
-	[ -z "${port}" ] && port="8443"
-    sed -i "s/bind-to.*/bind-to = \"0.0.0.0:${port}\"/g" /etc/mtg.toml
-    echo "Restarting MTProxy..."
-    systemctl restart mtg
-    echo "MTProxy restarted successfully!"
+get_latest_mtg() {
+    echo -e "${yellow}获取 MTG 最新版本...${plain}"
+    arch=$(uname -m)
+    [[ $arch == "x86_64" ]] && arch="amd64"
+    [[ $arch == "aarch64" ]] && arch="arm64"
+
+    version=$(curl -Ls "https://api.github.com/repos/9seconds/mtg/releases/latest" \
+        | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+
+    filename="mtg-${version#v}-linux-${arch}.tar.gz"
+
+    wget -q -O "$filename" \
+        "https://github.com/9seconds/mtg/releases/download/${version}/${filename}"
+
+    tar -xzf "$filename"
+    mv mtg-*/* "$BIN"
+    chmod +x "$BIN"
+    rm -rf mtg-* "$filename"
+
+    echo -e "${green}MTG 程序安装完成${plain}"
 }
 
-change_secret(){
-    echo -e "Please note that unauthorized modification of Secret may cause MTProxy to not function properly."
-    read -p "Enter the secret you want to modify:" secret
-	[ -z "${secret}" ] && secret="$(mtg generate-secret --hex itunes.apple.com)"
-    sed -i "s/secret.*/secret = \"${secret}\"/g" /etc/mtg.toml
-    echo "Secret changed successfully!"
-    echo "Restarting MTProxy..."
-    systemctl restart mtg
-    echo "MTProxy restarted successfully!"
+ensure_mtg() {
+    [[ -f "$BIN" ]] || get_latest_mtg
 }
 
-update_mtg(){
-    echo -e "Updating mtg..."
-    download_file
-    echo "mtg updated successfully, start to restart MTProxy..."
-    systemctl restart mtg
-    echo "MTProxy restarted successfully!"
+
+# ---------------------------------------------
+# 实例相关
+# ---------------------------------------------
+instance_path() {
+    echo "${INSTANCE_DIR}/$1"
 }
 
-start_menu() {
-    clear
-    echo -e "  MTProxy v2 One-Click Installation
----- by Vincent | github.com/missuo/MTProxy ----
- ${green} 1.${plain} Install MTProxy
- ${green} 2.${plain} Uninstall MTProxy
-————————————
- ${green} 3.${plain} Start MTProxy
- ${green} 4.${plain} Stop MTProxy
- ${green} 5.${plain} Restart MTProxy
- ${green} 6.${plain} Change Listen Port
- ${green} 7.${plain} Change Secret
- ${green} 8.${plain} Update MTProxy
-————————————
- ${green} 0.${plain} Exit
-————————————" && echo
+instance_conf() {
+    echo "$(instance_path $1)/mtg.toml"
+}
 
-	read -e -p " Please enter the number [0-8]: " num
-	case "$num" in
+instance_secret_file() {
+    echo "$(instance_path $1)/secret.txt"
+}
+
+instance_service() {
+    echo "mtg_$1.service"
+}
+
+
+create_instance() {
+    port=$1
+    domain=$2
+
+    ensure_dirs
+    ensure_mtg
+
+    INST_DIR=$(instance_path $port)
+    mkdir -p "$INST_DIR"
+
+    SECRET=$($BIN generate-secret --hex "$domain")
+    echo "$SECRET" > "$(instance_secret_file $port)"
+
+cat > "$(instance_conf $port)" <<EOF
+secret = "$SECRET"
+bind-to = "0.0.0.0:${port}"
+EOF
+
+cat > "/etc/systemd/system/$(instance_service $port)" <<EOF
+[Unit]
+Description=MTG Instance on port $port
+After=network.target
+
+[Service]
+ExecStart=$BIN run $(instance_conf $port)
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$(instance_service $port)"
+    systemctl restart "$(instance_service $port)"
+
+    echo -e "${green}实例 ${port} 安装完成！${plain}"
+    show_link $port
+}
+
+
+show_link() {
+    port=$1
+    conf=$(instance_conf $port)
+
+    secret=$(grep '^secret' "$conf" | sed -E 's/.*"([^"]+)".*/\1/')
+    ip=$(public_ip)
+
+    tg1="tg://proxy?server=${ip}&port=${port}&secret=${secret}"
+    tg2="https://t.me/proxy?server=${ip}&port=${port}&secret=${secret}"
+
+    echo -e "${green}====== MTG 实例 $port 连接信息 ======${plain}"
+    echo "$tg1"
+    echo "$tg2"
+    echo -e "${green}====================================${plain}"
+}
+
+
+start_instance() {
+    port=$1
+    systemctl start "$(instance_service $port)"
+    echo -e "${green}实例 $port 已启动${plain}"
+    show_link $port
+}
+
+stop_instance() {
+    port=$1
+    systemctl stop "$(instance_service $port)"
+    echo -e "${yellow}实例 $port 已停止${plain}"
+}
+
+restart_instance() {
+    port=$1
+    systemctl restart "$(instance_service $port)"
+    echo -e "${green}实例 $port 已重启${plain}"
+    show_link $port
+}
+
+uninstall_instance() {
+    port=$1
+    stop_instance $port
+    systemctl disable "$(instance_service $port)"
+    rm -f "/etc/systemd/system/$(instance_service $port)"
+    rm -rf "$(instance_path $port)"
+    systemctl daemon-reload
+    echo -e "${red}实例 $port 已卸载${plain}"
+}
+
+list_instances() {
+    echo -e "${green}===== 已安装实例 =====${plain}"
+    ls -1 "$INSTANCE_DIR"
+}
+
+
+# ---------------------------------------------
+# 菜单
+# ---------------------------------------------
+menu() {
+clear
+echo -e "
+${green}MTG 多实例终极管理脚本${plain}
+
+1. 安装实例
+2. 卸载实例
+3. 启动实例
+4. 停止实例
+5. 重启实例
+6. 查看实例链接
+7. 列出所有实例
+0. 退出
+--------------------------------
+"
+
+read -p "请输入选项：" n
+case $n in
     1)
-		download_file
-        configure_mtg
-        configure_systemctl
-		;;
+        read -p "请输入端口：" port
+        read -p "请输入伪装域名（默认 itunes.apple.com）：" domain
+        [[ -z "$domain" ]] && domain="itunes.apple.com"
+        create_instance $port $domain
+    ;;
     2)
-        echo "Uninstall MTProxy..."
-        systemctl stop mtg
-        systemctl disable mtg
-        rm -rf /usr/bin/mtg
-        rm -rf /etc/mtg.toml
-        rm -rf /etc/systemd/system/mtg.service
-        echo "Uninstall MTProxy successfully!"
-        ;;
-    3) 
-        echo "Starting MTProxy..."
-        systemctl start mtg
-        systemctl enable mtg
-        echo "MTProxy started successfully!"
-        ;;
-    4) 
-        echo "Stopping MTProxy..."
-        systemctl stop mtg
-        systemctl disable mtg
-        echo "MTProxy stopped successfully!"
-        ;;
-    5)  
-        echo "Restarting MTProxy..."
-        systemctl restart mtg
-        echo "MTProxy restarted successfully!"
-        ;;
-    6) 
-        change_port
-        ;;
+        read -p "请输入要卸载的端口：" port
+        uninstall_instance $port
+    ;;
+    3)
+        read -p "请输入要启动的端口：" port
+        start_instance $port
+    ;;
+    4)
+        read -p "请输入要停止的端口：" port
+        stop_instance $port
+    ;;
+    5)
+        read -p "请输入要重启的端口：" port
+        restart_instance $port
+    ;;
+    6)
+        read -p "请输入要查看的端口：" port
+        show_link $port
+    ;;
     7)
-        change_secret
-        ;;
-    8)
-        update_mtg
-        ;;
-    0) exit 0
-        ;;
-    *) echo -e "${Error} Please enter a number [0-8]: "
-        ;;
-    esac
+        list_instances
+    ;;
+    0)
+        exit 0
+    ;;
+    *)
+        echo "无效输入"
+    ;;
+esac
 }
-start_menu
+
+# ---------------------------------------------
+# 命令方式入口
+# ---------------------------------------------
+if [[ $# -eq 0 ]]; then
+    menu
+    exit 0
+fi
+
+cmd=$1
+shift
+
+case "$cmd" in
+    install)   create_instance $@ ;;
+    uninstall) uninstall_instance $@ ;;
+    start)     start_instance $@ ;;
+    stop)      stop_instance $@ ;;
+    restart)   restart_instance $@ ;;
+    show|status) show_link $@ ;;
+    list)      list_instances ;;
+    *)
+        echo "未知命令：$cmd"
+        echo "示例："
+        echo " bash mtg.sh install 443 itunes.apple.com"
+        echo " bash mtg.sh start 443"
+        echo " bash mtg.sh list"
+    ;;
+esac
