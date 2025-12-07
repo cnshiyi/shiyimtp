@@ -1,14 +1,9 @@
 #!/bin/bash
 # ================================================================
-# MTProxy Docker 安装脚本（正式增强版）
+# MTProxy Docker 安装脚本（固定 Secret 版）
 # 端口固定：15689
-# 功能：
-#  - 自动跳过重复安装，但会输出已有代理链接
-#  - 固定 Secret（保存在 /opt/mtproxy/config/secret）
-#  - 自动安装 Docker + xxd
-#  - 永不出现 invalid proto
-#  - 自动 docker run
-#  - 启动成功检测
+# 使用你指定的 Secret：f0da49e49776700dec55677a5591bd1e
+# 永远不会随机，不会变
 # ================================================================
 
 set -e
@@ -22,8 +17,15 @@ PORT=15689
 INSTALL_DIR="/opt/mtproxy/config"
 SECRET_FILE="${INSTALL_DIR}/secret"
 
+# ================================
+# 🚨 固定 Secret（你已指定）
+# ================================
+FIXED_SECRET="f0da49e49776700dec55677a5591bd1e"
+
+
 echo -e "\n========== MTProxy 环境检查 ==========\n"
 ok "使用固定端口：$PORT"
+ok "使用固定 SECRET：$FIXED_SECRET"
 
 # ---------------------------------------------------------
 # 检查 Docker
@@ -37,20 +39,22 @@ else
 fi
 
 # ---------------------------------------------------------
-# 如果已经安装 → 输出代理链接（你要求的）
+# 如果已经安装 → 输出代理链接（始终使用固定 Secret）
 # ---------------------------------------------------------
 if [ -d "$INSTALL_DIR" ] && [ -f "$SECRET_FILE" ]; then
-    SECRET=$(cat "$SECRET_FILE")
+
+    # 永远保持固定 secret
+    echo -n "$FIXED_SECRET" > "$SECRET_FILE"
 
     IP=$(wget -qO- ipv4.icanhazip.com || echo "0.0.0.0")
 
-    TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
-    TM_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
+    TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=${FIXED_SECRET}"
+    TM_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=${FIXED_SECRET}"
 
     echo -e "\n========== MTProxy 已安装，输出连接 =========="
     echo -e "公网 IP: ${GREEN}${IP}${RESET}"
     echo -e "端口:   ${GREEN}${PORT}${RESET}"
-    echo -e "秘钥:   ${GREEN}${SECRET}${RESET}\n"
+    echo -e "秘钥:   ${GREEN}${FIXED_SECRET}${RESET}\n"
     echo -e "tg:// 链接：\n${GREEN}${TG_LINK}${RESET}\n"
     echo -e "t.me 链接：\n${GREEN}${TM_LINK}${RESET}"
     echo -e "=================================================\n"
@@ -83,14 +87,12 @@ if [ "$DOCKER" = false ]; then
 fi
 
 # ---------------------------------------------------------
-# 生成固定 Secret（只生成一次）
+# 写入固定 Secret（不会随机）
 # ---------------------------------------------------------
 mkdir -p "$INSTALL_DIR"
-
-SECRET=$(xxd -ps -l 16 /dev/urandom)
-echo -n "$SECRET" > "$SECRET_FILE"
+echo -n "$FIXED_SECRET" > "$SECRET_FILE"
 chmod 600 "$SECRET_FILE"
-ok "生成 Secret：$SECRET"
+ok "已写入固定 Secret：$FIXED_SECRET"
 
 # ---------------------------------------------------------
 # 获取公网 IP
@@ -108,13 +110,13 @@ docker run -d \
     --restart always \
     -p ${PORT}:443 \
     -v /opt/mtproxy/config:/data \
-    -e SECRET=${SECRET} \
+    -e SECRET=${FIXED_SECRET} \
     alexdoesh/mtproxy:latest
 
 sleep 2
 
 # ---------------------------------------------------------
-# 确认启动成功
+# 启动检查
 # ---------------------------------------------------------
 if ! docker ps --format '{{.Names}}' | grep -q "^mtproxy$"; then
     err "MTProxy 启动失败，查看日志：docker logs mtproxy"
@@ -124,15 +126,15 @@ fi
 ok "MTProxy 启动成功！"
 
 # ---------------------------------------------------------
-# 输出连接
+# 输出连接信息
 # ---------------------------------------------------------
-TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
-TM_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=${SECRET}"
+TG_LINK="tg://proxy?server=${IP}&port=${PORT}&secret=${FIXED_SECRET}"
+TM_LINK="https://t.me/proxy?server=${IP}&port=${PORT}&secret=${FIXED_SECRET}"
 
 echo -e "\n===================== MTProxy 连接信息 ====================="
 echo -e "公网 IP: ${GREEN}${IP}${RESET}"
 echo -e "端口:   ${GREEN}${PORT}${RESET}"
-echo -e "秘钥:   ${GREEN}${SECRET}${RESET}\n"
+echo -e "秘钥:   ${GREEN}${FIXED_SECRET}${RESET}\n"
 echo -e "tg:// 链接：\n${GREEN}${TG_LINK}${RESET}\n"
 echo -e "t.me 链接：\n${GREEN}${TM_LINK}${RESET}"
 echo -e "=============================================================\n"
