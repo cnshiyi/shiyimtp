@@ -20,7 +20,7 @@ SECRET_FILE="${INSTALL_DIR}/secret"
 # ================================
 # 🚨 固定 Secret（你已指定）
 # ================================
-FIXED_SECRET="f0da49e49776700dec55677a5591bd1e"
+FIXED_SECRET="1acc29884b4df1a1a45deed1c83dc4ee"
 
 
 echo -e "\n========== MTProxy 环境检查 ==========\n"
